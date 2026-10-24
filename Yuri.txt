@@ -18,7 +18,8 @@ if env.EternityAutoFarm and env.EternityAutoFarm.Alive then
         AntiAfk = old.AntiAfk, AntiAfkPulses = old.AntiAfkPulses,
         QuestRuns = old.QuestRuns, QuestFailures = old.QuestFailures, QuestLastCompleted = old.QuestLastCompleted,
         SkillsEnabled = old.SkillsEnabled, SkillSelection = old.SkillSelection, SkillsUsed = old.SkillsUsed,
-        AutoPotion = old.AutoPotion, PotionThreshold = old.PotionThreshold, PotionUsed = old.PotionUsed}
+        AutoPotion = old.AutoPotion, PotionThreshold = old.PotionThreshold, PotionUsed = old.PotionUsed,
+        QuestFilter = old.QuestFilter, QuestSearch = old.QuestSearch, SelectedQuest = old.SelectedQuest}
     if typeof(old.GetWebhookSettings) == "function" then
         local ok, settings = pcall(old.GetWebhookSettings)
         if ok then previousSettings.Webhook = settings end
@@ -26,7 +27,7 @@ if env.EternityAutoFarm and env.EternityAutoFarm.Alive then
 end
 local inheritedRestores = {}
 for _, old in filtergc("table", {Keys = {"Alive", "Enabled", "Selected", "SetEnabled", "Destroy"}}, false) do
-    if old.Version == "1.0" or old.Version == "1.1" or old.Version == "1.2" or old.Version == "1.3" or old.Version == "1.4" or old.Version == "1.5" or old.Version == "1.6" or old.Version == "1.7" or old.Version == "1.8" or old.Version == "1.9" or old.Version == "2.0" or old.Version == "2.1" or old.Version == "2.2" or old.Version == "2.3" or old.Version == "2.4" or old.Version == "2.5" or old.Version == "2.6" or old.Version == "2.7" or old.Version == "2.8" or old.Version == "2.9" or old.Version == "2.10" or old.Version == "2.11" or old.Version == "2.12" then
+    if old.Version == "1.0" or old.Version == "1.1" or old.Version == "1.2" or old.Version == "1.3" or old.Version == "1.4" or old.Version == "1.5" or old.Version == "1.6" or old.Version == "1.7" or old.Version == "1.8" or old.Version == "1.9" or old.Version == "2.0" or old.Version == "2.1" or old.Version == "2.2" or old.Version == "2.3" or old.Version == "2.4" or old.Version == "2.5" or old.Version == "2.6" or old.Version == "2.7" or old.Version == "2.8" or old.Version == "2.9" or old.Version == "2.10" or old.Version == "2.11" or old.Version == "2.12" or old.Version == "2.13" or old.Version == "2.14" or old.Version == "2.15" then
         local cleanup = task.spawn(function() pcall(old.Destroy) end)
         if old.RestoringEquipment then table.insert(inheritedRestores, old) end
         old.Enabled, old.Alive = false, false
@@ -63,7 +64,7 @@ local state = {
     AutoTownWarp = previousSettings.AutoTownWarp ~= false, Warps = 0,
     Status = "พร้อมใช้งาน", Target = nil, Distance = 0,
     Attacks = 0, Kills = 0, DamageObserved = 0, PathStatus = "idle", LastError = nil,
-    MenuVisible = true, Version = "2.12", Connections = {},
+    MenuVisible = true, Version = "2.15", Connections = {},
     SettingsOpen = false, MaterialPickerOpen = false, UiScale = previousSettings.UiScale or 1,
     UiSearch = previousSettings.UiSearch or {Combat = "", Mining = "", Craft = "", Sell = ""},
     Travelling = false, TravelStatus = "", TravelDistance = 0,
@@ -96,6 +97,7 @@ local sellControls, sellSearchBox, sellLockButton, sellCancelButton, sellSelectA
 local webhookBox, webhookToggle, webhookLabel
 local autoRespawnButton
 local view = {}
+local questBrowser
 local theme = {
     Background = Color3.fromRGB(17, 12, 25), Surface = Color3.fromRGB(32, 23, 43), Inset = Color3.fromRGB(22, 16, 32),
     Border = Color3.fromRGB(76, 46, 74), Accent = Color3.fromRGB(187, 48, 91), AccentLight = Color3.fromRGB(246, 155, 188),
@@ -114,6 +116,7 @@ local savedMiningEquipment, miningBaseline
 local steelBaseline, ironBaseline, crystalliteBaseline
 local steelRound = {}
 local restoreThread, mineAimSince, mineAimTarget
+local mineRepositionGoal, mineRepositionTarget, mineRepositionUntil
 local warpPlan, warpRetryAt = nil, -100
 local medaiExitCleared, medaiGateCleared, caveReached = false, false, 0
 local originals = setmetatable({}, {__mode = "k"})
@@ -228,6 +231,77 @@ local function valid(m)
         and mobRoot(m) ~= nil
 end
 
+-- One frame-driven motion writer; smooth body turns never change walking speed or position.
+local motionController = {}
+do
+    local heldHumanoid, savedRotate
+    local nativeHeld = false
+    function motionController.Release()
+        if nativeHeld and combat and combat.HoldMovementFacing then
+            local ok,problem=pcall(combat.HoldMovementFacing,false)
+            if not ok then state.LastMotionError=tostring(problem) end
+        end
+        nativeHeld=false
+        state.MotionFacingOwned=false
+        if heldHumanoid and heldHumanoid.Parent then
+            pcall(function()heldHumanoid.AutoRotate=savedRotate end)
+        end
+        heldHumanoid,savedRotate=nil,nil
+    end
+    local function claim(h)
+        if heldHumanoid~=h then
+            motionController.Release()
+            heldHumanoid,savedRotate=h,h.AutoRotate
+        end
+        if combat and combat.HoldMovementFacing then
+            local ok,result=pcall(combat.HoldMovementFacing,true)
+            nativeHeld=ok and result~=false
+            if not ok then state.LastMotionError=tostring(result) end
+        end
+        state.MotionFacingOwned=nativeHeld
+        h.AutoRotate=not nativeHeld
+    end
+    function motionController.Step(dt,focused)
+        local active=state.Alive and (state.Enabled or state.Travelling)
+        local _,h,root=character()
+        local blocked=state.Respawning or state.StaminaRecovering
+            or (potionController and potionController.Pending)
+            or (autoSkills and autoSkills.Busy())
+        if not active or not h or not root or h.Health<=0 or blocked or (focused and not state.Travelling) then
+            if h and (active or heldHumanoid==h) then h:Move(Vector3.zero,false) end
+            motionController.Release()
+            return
+        end
+        local direction=moveGoal and Vector3.new(moveGoal.X-root.Position.X,0,moveGoal.Z-root.Position.Z)
+        if direction and direction.Magnitude>.35 then
+            claim(h)
+            h:Move(direction.Unit,false)
+            if nativeHeld then
+                local desired=CFrame.lookAt(root.Position,root.Position+direction.Unit)
+                local alpha=1-math.exp(-16*math.clamp(tonumber(dt) or 1/60,0,.15))
+                -- Both poses have the same position. Only yaw is blended.
+                root.CFrame=root.CFrame:Lerp(desired,alpha)
+            end
+            return
+        end
+        h:Move(Vector3.zero,false)
+        local target=state.Enabled and not state.Travelling and moveGoal==nil and valid(state.Target) and mobRoot(state.Target)
+        if target then
+            local aim=target.Position-root.Position
+            local vertical=math.abs(aim.Y)
+            aim=Vector3.new(aim.X,0,aim.Z)
+            local reach=state.Mode=="Mining" and 7.1 or 7.5
+            if aim.Magnitude<=reach and vertical<=7 then
+                claim(h)
+                -- Use the same horizontal/vertical reach as the actual engagement.
+                if aim.Magnitude>.1 then root.CFrame=CFrame.lookAt(root.Position,root.Position+aim) end
+                return
+            end
+        end
+        motionController.Release()
+    end
+end
+
 local function invalidateRoute()
     generation += 1
     route, routeGoal, routeTarget = nil, nil, nil
@@ -275,12 +349,33 @@ local function resolveCombat()
         end
     end
     assert(controller, "ไม่พบ CharacterController ของเกม")
+    local movementFacing = controller.holdFacing
+    assert(type(movementFacing) == "function", "ไม่พบคำสั่งควบคุมทิศตัวละครของเกม")
+    local scopeOk, facingScope = pcall(getfenv, movementFacing)
+    local expectedController = systems and systems:FindFirstChild("CharacterController")
+    assert(scopeOk and facingScope.script == expectedController,
+        "คำสั่งควบคุมทิศตัวละครไม่ใช่ CharacterController ปัจจุบัน")
+    -- Native holdFacing(tag, boolean) uses dot calls, not a self parameter.
+    local signatureOk, parameterCount, variadic = pcall(debug.info, movementFacing, "a")
+    assert(not signatureOk or (parameterCount == 2 and not variadic),
+        "รูปแบบคำสั่งควบคุมทิศตัวละครของเกมเปลี่ยนไป")
+    local facingIntent = {Character = nil, On = nil, RefreshedAt = -100}
     local gameInput = require(client.Input)
     local nativeCombat = require(scriptObject)
     return {
         Attack = nativeCombat.lightDown,
         Release = nativeCombat.lightUp,
         IsFocused = gameInput.isFocused,
+        HoldMovementFacing = function(on)
+            on = on == true
+            local character, now = player.Character, os.clock()
+            if facingIntent.Character == character and facingIntent.On == on
+                and (not on or now - facingIntent.RefreshedAt < 0.75) then return end
+            -- Unique key cannot release native Swing/Mining/skill facing holds.
+            -- Native holds expire after six seconds without refresh, including on script failure.
+            movementFacing("EvernightAutoFacing", on)
+            facingIntent.Character, facingIntent.On, facingIntent.RefreshedAt = character, on, now
+        end,
         Unsheathe = function()
             local c = player.Character
             if c and c:GetAttribute("Sheathed") and not controller.isSheathing() then
@@ -1046,11 +1141,10 @@ local function resolveServiceTravel()
     end
     function api.Move(goal)
         moveGoal = goal
-        local _,h = character()
-        if h then h.AutoRotate=true h:MoveTo(goal) end
     end
     function api.Jump() local _,h=character() if h then requestJump(h) end end
     function api.Stop(job)
+        motionController.Release()
         moveGoal=nil
         if job.ActivePath then pcall(function()job.ActivePath:Destroy()end) job.ActivePath=nil end
         if job.PlanThread and job.PlanThread~=coroutine.running() then pcall(task.cancel,job.PlanThread) end
@@ -1135,24 +1229,40 @@ end
 
 local function setSprint(on, force)
     local c = player.Character
-    if not c or not combat or (not force and os.clock() - lastSprint < 0.6) then return end
+    if not c or not combat then return end
+    on = on == true
+    local now = os.clock()
+    local previous = state.SprintRequest
+    local changed = not previous or previous.Character ~= c or previous.On ~= on
+    local actual = c:GetAttribute("Sprinting") == true
+    if not changed then
+        -- A forced focus/idle stop repeated every tick must not restart an identical task.
+        -- Retry only a replicated disagreement, with enough time for the prior request to settle.
+        if actual == on or now - previous.At < 1.25 then return end
+    elseif on and not force and now - lastSprint < 0.6 then
+        -- Stops are immediate; ordinary starts retain the existing throttle.
+        return
+    end
     if sprintThread and coroutine.status(sprintThread) ~= "dead" then
-        if not force and os.clock() - sprintAt < 2 then return end
+        if not changed and now - sprintAt < 2 then return end
         pcall(task.cancel, sprintThread)
         sprintThread = nil
     end
-    if force or (c:GetAttribute("Sprinting") == true) ~= on then
-        lastSprint = os.clock()
-        sprintAt = os.clock()
-        sprintThread = task.spawn(function()
-            local ok, problem = pcall(combat.Sprint, on)
-            if not ok then state.LastError = tostring(problem) end
-        end)
-        local pending = sprintThread
-        task.delay(2, function()
-            if coroutine.status(pending) ~= "dead" then pcall(task.cancel, pending) end
-        end)
-    end
+    lastSprint, sprintAt = now, now
+    state.SprintRequest = {Character = c, On = on, At = now}
+    sprintThread = task.spawn(function()
+        local ok, problem = pcall(combat.Sprint, on)
+        if not ok then
+            state.LastError = tostring(problem)
+            -- Leave disagreement retryable; never turn a failed sprint call into movement.
+            if state.SprintRequest and state.SprintRequest.Character == c
+                and state.SprintRequest.On == on then state.SprintRequest.At = os.clock() end
+        end
+    end)
+    local pending = sprintThread
+    task.delay(2, function()
+        if coroutine.status(pending) ~= "dead" then pcall(task.cancel, pending) end
+    end)
 end
 
 local function actionBusy()
@@ -1649,6 +1759,120 @@ do
     state.ArtworkAvailable = evernightArtwork.Asset ~= nil
 end
 
+-- Manual inventory snapshot only; no HTTP, remotes, inventory writes, currency, or level data.
+-- Native evidence: Client.State.get().inventory; Items.get/getDisplayName/isStackable/getCategory.
+-- EntryCount = inventory records, TypeCount = distinct displayed item-name rows, ItemCount = units.
+local function buildInventoryReport()
+    local players = game:GetService("Players")
+    local storage = game:GetService("ReplicatedStorage")
+    local reportPlayer = players.LocalPlayer
+    local client = reportPlayer and reportPlayer:FindFirstChild("PlayerScripts")
+    client = client and client:FindFirstChild("Client")
+    local stateModule = client and client:FindFirstChild("State")
+    assert(stateModule, "ยังไม่พบข้อมูลกระเป๋าของเกม")
+    local inventoryState = require(stateModule)
+    local itemApi = require(storage.Shared.Items)
+    local data = inventoryState.get()
+    assert(type(data) == "table" and type(data.inventory) == "table", "ข้อมูลกระเป๋ายังไม่พร้อม")
+
+    local groupNames = {"⚔️ อาวุธ", "🛡️ ชุดเกราะและโล่", "⛏️ พลั่ว", "💎 แร่", "🧪 ยา", "🎒 อื่นๆ"}
+    local oreKinds = {IronIngot = true, SteelIngot = true, KoboldBar = true,
+        Crystallite = true, Obsidian = true, Verdite = true}
+    local groups = {{}, {}, {}, {}, {}, {}}
+    local entryCount, itemCount, typeCount = 0, 0, 0
+
+    local function amount(value)
+        local n = tonumber(value)
+        if not n or n ~= n or n == math.huge or n == -math.huge then return 1 end
+        return math.max(0, math.floor(n))
+    end
+    local function displayName(item, desc)
+        local ok, name = pcall(itemApi.getDisplayName, item)
+        if not ok or type(name) ~= "string" or name == "" then
+            ok, name = pcall(itemApi.getName, item)
+        end
+        if not ok or type(name) ~= "string" or name == "" or name == "nil" then
+            name = desc and desc.name or item.name or item.kind or item.itemType or "ไอเท็มไม่ทราบชื่อ"
+        end
+        name = tostring(name):gsub("[%z\1-\31\127]", " ")
+        assert(utf8.len(name), "ชื่อไอเท็มมีอักขระที่อ่านไม่ได้")
+        return name
+    end
+    local function groupFor(item, desc)
+        local itemType = desc and desc.itemType or item.itemType
+        if itemApi.WEAPON_TYPES and itemApi.WEAPON_TYPES[itemType] then return 1 end
+        if itemType == "Armor" or itemType == "Shield" then return 2 end
+        if desc and (desc.cosmeticSlot == "pickaxe" or desc.subtype == "Pickaxe") then return 3 end
+        if oreKinds[item.kind] then return 4 end
+        if desc and itemType == "Consumable" and desc.subtype ~= "Food" and desc.isTPCrystal ~= true then
+            local health, stamina = tonumber(desc.health) or 0, tonumber(desc.stamina) or 0
+            if health > 0 or stamina > 0 or desc.cureStatusEffect ~= nil then return 5 end
+        end
+        return 6
+    end
+
+    for _, item in pairs(data.inventory) do
+        if type(item) == "table" then
+            entryCount += 1
+            local ok, desc = pcall(itemApi.get, item)
+            if not ok or type(desc) ~= "table" then desc = nil end
+            local name = displayName(item, desc)
+            local group = groupFor(item, desc)
+            -- Native State.count uses item.amount or 1, including stacks with uniqueId.
+            local count = amount(item.amount)
+            local row = groups[group][name]
+            if row then
+                row.Count += count
+            else
+                groups[group][name] = {Name = name, Count = count}
+                typeCount += 1
+            end
+            itemCount += count
+        end
+    end
+
+    -- Escape Discord formatting without changing the visible native name.
+    local function escapedName(name)
+        return (name:gsub("\\", "\\\\"):gsub("([%*_%~%\x60%[%]%(%)|])", "\\%1"))
+    end
+    local fields = {}
+    local function addField(name, value)
+        assert(#value <= 900 and utf8.len(value) and utf8.len(value) <= 900, "รายการไอเท็มยาวเกินขนาดข้อความ")
+        table.insert(fields, {name = name, value = value, inline = false})
+    end
+    for group = 1, #groupNames do
+        local rows = {}
+        for _, row in pairs(groups[group]) do table.insert(rows, row) end
+        table.sort(rows, function(a, b) return a.Name < b.Name end)
+        local lines, byteLength, pointLength, part = {}, 0, 0, 1
+        local function flush()
+            if #lines == 0 then return end
+            local fieldName = groupNames[group] .. (part > 1 and (" · ต่อ " .. tostring(part)) or "")
+            addField(fieldName, table.concat(lines, "\n"))
+            lines, byteLength, pointLength, part = {}, 0, 0, part + 1
+        end
+        for _, row in ipairs(rows) do
+            local line = "• " .. escapedName(row.Name) .. " ×" .. string.format("%.0f", row.Count)
+            local points = utf8.len(line)
+            assert(points and #line <= 900 and points <= 900,
+                "ชื่อไอเท็มหนึ่งรายการยาวเกินขนาดข้อความ กรุณาย่อชื่อไอเท็มก่อนส่ง")
+            local separator = #lines > 0 and 1 or 0
+            if byteLength + separator + #line > 900 or pointLength + separator + points > 900 then flush() end
+            separator = #lines > 0 and 1 or 0
+            table.insert(lines, line)
+            byteLength += separator + #line
+            pointLength += separator + points
+        end
+        flush()
+    end
+    if #fields == 0 then addField("🎒 กระเป๋า", "ไม่มีไอเท็มในกระเป๋า") end
+
+    local floor
+    pcall(function() floor = require(storage.Shared.StoryConfig).FLOOR end)
+    return {Fields = fields, EntryCount = entryCount, TypeCount = typeCount, ItemCount = itemCount,
+        PlayerName = reportPlayer.Name, Floor = floor, Empty = typeCount == 0}
+end
+
 -- Insert before updateStatus. Run webhookStep in its own 0.5-second worker.
 local startWebhookTracking, stopWebhookTracking, webhookStep, cancelWebhookRequest
 do
@@ -1748,6 +1972,11 @@ do
     local tracking, stopAt, observedSteel, observedIron, observedCrystal = false, nil, nil, nil, nil
     local epoch, job, testQueued = 0, nil, false
     local nextBatchAt, rateGateAt = os.clock() + 15, 0
+    -- Inventory exports are explicit, frozen, and never inherited after a reload.
+    local inventoryBatch, inventorySerial, inventoryCooldownUntil = nil, 0, 0
+    state.InventoryWebhookBusy, state.InventoryWebhookPage, state.InventoryWebhookPages = false, 0, 0
+    state.InventoryWebhookCooldownUntil = 0
+    state.InventoryWebhookStatus = "กดปุ่มไอเทมเพื่อส่งกระเป๋า"
     state.WebhookSent = 0
     state.WebhookStatus = enabled and "พร้อมแจ้งเตือน Discord" or "ปิดแจ้งเตือน Discord"
 
@@ -1757,6 +1986,8 @@ do
         state.WebhookPendingCrystal = pendingCrystal
         state.WebhookPendingLevels = levelCount(pendingLevels)
         state.WebhookLevelSnapshot = copyLevels(observedLevels)
+        state.InventoryWebhookBusy = inventoryBatch ~= nil
+        state.InventoryWebhookCooldownUntil = inventoryCooldownUntil
     end
     local function stocks()
         local function read(kind)
@@ -1774,11 +2005,17 @@ do
     end
     cancelWebhookRequest = function()
         epoch += 1
+        if inventoryBatch then state.InventoryWebhookStatus = "ยกเลิกส่งกระเป๋าแล้ว" end
+        inventoryBatch = nil
+        state.InventoryWebhookPage, state.InventoryWebhookPages = 0, 0
+        publish()
         local thread = state.WebhookRequestThread
         state.WebhookRequestThread, job, testQueued = nil, nil, false
         if thread and thread ~= coroutine.running() and coroutine.status(thread) ~= "dead" then pcall(task.cancel, thread) end
     end
     local function pause(message)
+        if inventoryBatch then state.InventoryWebhookStatus = message end
+        inventoryBatch = nil
         enabled, job, testQueued = false, nil, false
         state.WebhookRequestThread = nil
         state.WebhookStatus = message
@@ -1810,6 +2047,67 @@ do
         snapshot()
         observeLevels(false)
         state.WebhookStatus = enabled and "เปิดแจ้งเตือน Discord" or "ปิดแจ้งเตือน Discord"
+        publish()
+        return true
+    end
+    function state.SendInventoryWebhook()
+        if not state.Alive then return false end
+        if not url then state.InventoryWebhookStatus = "ตั้งค่าลิงก์ Discord Webhook ก่อน" return false end
+        if inventoryBatch then
+            state.InventoryWebhookStatus = "กำลังส่งกระเป๋า • รอให้ครบทุกหน้าก่อน"
+            return false
+        end
+        local now = os.clock()
+        if now < inventoryCooldownUntil then
+            state.InventoryWebhookStatus = "รออีก " .. math.ceil(inventoryCooldownUntil - now) .. " วินาที แล้วส่งใหม่"
+            return false
+        end
+        local reservation = {Loading = true, Url = url, Epoch = epoch}
+        inventoryBatch = reservation
+        state.InventoryWebhookStatus = "กำลังอ่านไอเทมในกระเป๋า"
+        publish()
+        local ok, report = pcall(buildInventoryReport)
+        -- A configuration change during a yielding read must cancel the old destination.
+        if inventoryBatch ~= reservation or epoch ~= reservation.Epoch or url ~= reservation.Url then return false end
+        local valid = ok and type(report) == "table" and type(report.Fields) == "table"
+        local fields = {}
+        if valid then
+            for _, field in report.Fields do
+                if type(field) ~= "table" or type(field.name) ~= "string" or #field.name == 0 or #field.name > 256
+                    or type(field.value) ~= "string" or #field.value == 0 or #field.value > 900 then
+                    valid = false
+                    break
+                end
+                -- Whitelist only names and item quantities from the report contract.
+                table.insert(fields, {name = field.name, value = field.value, inline = false})
+            end
+        end
+        if not valid then
+            inventoryBatch = nil
+            state.InventoryWebhookStatus = "อ่านไอเทมไม่สำเร็จ • ลองกดส่งใหม่"
+            publish()
+            return false
+        end
+        if #fields == 0 then table.insert(fields, {name = "ไอเทม", value = "ไม่มีไอเทมในกระเป๋า", inline = false}) end
+        local pages, page, pageBytes = {}, {}, 0
+        for _, field in fields do
+            local fieldBytes = #field.name + #field.value
+            -- Four fields per page, with extra headroom for unusually long category names.
+            if #page >= 4 or (#page > 0 and pageBytes + fieldBytes > 3800) then
+                table.insert(pages, page)
+                page, pageBytes = {}, 0
+            end
+            table.insert(page, field)
+            pageBytes += fieldBytes
+        end
+        if #page > 0 then table.insert(pages, page) end
+        inventorySerial += 1
+        inventoryCooldownUntil = now + 10
+        inventoryBatch = {Id = inventorySerial, Url = url, Epoch = epoch, Pages = pages, Page = 1,
+            EntryCount = countValue(report.EntryCount), TypeCount = countValue(report.TypeCount), ItemCount = countValue(report.ItemCount),
+            FieldsCount = #fields, MessageIds = {}, HasThumbnail = true}
+        state.InventoryWebhookPage, state.InventoryWebhookPages = 1, #pages
+        state.InventoryWebhookStatus = "รอส่งไอเทม • " .. #pages .. " หน้า"
         publish()
         return true
     end
@@ -1851,7 +2149,7 @@ do
         if code == 200 then
             local parsed, body = pcall(HttpService.JSONDecode, HttpService, type(response.Body) == "string" and response.Body or "")
             if parsed and type(body) == "table" and type(body.id) == "string" and body.id:match("^%d+$") then
-                if not current.Test then
+                if not current.Test and current.Kind ~= "Inventory" then
                     pendingSteel = math.max(0, pendingSteel - current.Steel)
                     pendingIron = math.max(0, pendingIron - current.Iron)
                     pendingCrystal = math.max(0, pendingCrystal - current.Crystal)
@@ -1871,7 +2169,32 @@ do
                     HasImage = type(sentEmbed) == "table" and type(sentEmbed.image) == "table",
                     HasThumbnail = type(sentEmbed) == "table" and type(sentEmbed.thumbnail) == "table",
                     AttachmentCount = type(body.attachments) == "table" and #body.attachments or 0}
-                state.WebhookStatus = current.Test and "ส่งทดสอบสำเร็จ" or current.Kind == "Levels" and "แจ้งเลเวลที่อัปสำเร็จ" or "แจ้งแร่ที่ได้เพิ่มสำเร็จ"
+                if current.Kind == "Inventory" then
+                    local batch = inventoryBatch
+                    if batch and batch.Id == current.InventoryId then
+                        local complete = current.InventoryPage >= #batch.Pages
+                        table.insert(batch.MessageIds, body.id)
+                        batch.HasThumbnail = batch.HasThumbnail and type(sentEmbed) == "table" and type(sentEmbed.thumbnail) == "table"
+                        local messageIds = {}
+                        for _, id in batch.MessageIds do table.insert(messageIds, id) end
+                        state.InventoryWebhookLastSent = {Kind = "Inventory", MessageId = body.id, Page = current.InventoryPage,
+                            Pages = #batch.Pages, Complete = complete, EntryCount = batch.EntryCount,
+                            TypeCount = batch.TypeCount, ItemCount = batch.ItemCount, PagesSent = current.InventoryPage,
+                            PageCount = #batch.Pages, HasThumbnail = batch.HasThumbnail, MessageIds = messageIds,
+                            FieldsCount = batch.FieldsCount, PageFieldsCount = #batch.Pages[current.InventoryPage], ItemOnly = true}
+                        state.InventoryWebhookPage, state.InventoryWebhookPages = current.InventoryPage, #batch.Pages
+                        if complete then
+                            inventoryBatch = nil
+                            state.InventoryWebhookStatus = "ส่งไอเทมครบ " .. #batch.Pages .. " หน้าแล้ว"
+                        else
+                            batch.Page = current.InventoryPage + 1
+                            state.InventoryWebhookStatus = "ส่งแล้ว " .. current.InventoryPage .. "/" .. #batch.Pages .. " หน้า"
+                        end
+                    end
+                    state.WebhookStatus = state.InventoryWebhookStatus
+                else
+                    state.WebhookStatus = current.Test and "ส่งทดสอบสำเร็จ" or current.Kind == "Levels" and "แจ้งเลเวลที่อัปสำเร็จ" or "แจ้งแร่ที่ได้เพิ่มสำเร็จ"
+                end
                 job, nextBatchAt = nil, os.clock() + 15
                 publish()
                 return
@@ -1882,6 +2205,7 @@ do
             if current.RateRetries >= 3 then pause("Discord จำกัดการส่ง • เก็บยอดค้างไว้ กรุณาเปิดใหม่ภายหลัง") return end
             current.DueAt = rateGateAt
             state.WebhookStatus = "Discord จำกัดการส่ง • รอตามเวลาที่กำหนด"
+            if current.Kind == "Inventory" then state.InventoryWebhookStatus = state.WebhookStatus end
             return
         elseif code and code >= 400 and code < 500 then
             pause("Discord ปฏิเสธคำขอ (HTTP " .. code .. ") • ตรวจลิงก์แล้วเปิดใหม่")
@@ -1891,6 +2215,7 @@ do
         if current.Failures >= 3 then pause("ส่ง Discord ไม่สำเร็จ • เก็บยอดค้างไว้ กรุณาเปิดใหม่") return end
         current.DueAt = os.clock() + 2 ^ current.Failures + math.random()
         state.WebhookStatus = "ส่ง Discord ไม่สำเร็จ • กำลังรอลองใหม่"
+        if current.Kind == "Inventory" then state.InventoryWebhookStatus = state.WebhookStatus end
     end
     local function sendAttempt(current)
         local requestFn = type(request) == "function" and request
@@ -1901,7 +2226,13 @@ do
         current.Attempt += 1
         current.InFlight, current.StartedAt = true, os.clock()
         local attempt = current.Attempt
-        state.WebhookStatus = current.Test and "กำลังส่งทดสอบ" or current.Kind == "Levels" and "กำลังแจ้งเลเวลที่อัป" or "กำลังแจ้งยอดแร่"
+        if current.Kind == "Inventory" then
+            state.InventoryWebhookStatus = "กำลังส่งไอเทม หน้า " .. current.InventoryPage .. "/" .. current.InventoryPages
+            state.InventoryWebhookPage, state.InventoryWebhookPages = current.InventoryPage, current.InventoryPages
+            state.WebhookStatus = state.InventoryWebhookStatus
+        else
+            state.WebhookStatus = current.Test and "กำลังส่งทดสอบ" or current.Kind == "Levels" and "กำลังแจ้งเลเวลที่อัป" or "กำลังแจ้งยอดแร่"
+        end
         state.WebhookRequestThread = task.defer(function()
             local ok, response = pcall(requestFn, {
                 Url = current.Url .. "?wait=true", Method = "POST", Timeout = 15,
@@ -1909,6 +2240,19 @@ do
             })
             finishAttempt(current, attempt, ok, response)
         end)
+    end
+
+    local function attachArtwork(current, embed)
+        local payload = HttpService:JSONEncode({username = "Evernight", embeds = {embed},
+            attachments = {{id = 0, filename = evernightArtwork.Filename, description = "Evernight"}}, allowed_mentions = {parse = {}}})
+        local boundary = "EvernightEternity" .. tostring(sequence) .. "RubyNight"
+        -- Every retry keeps exactly the same frozen payload and original JPEG bytes.
+        current.Body = "--" .. boundary .. '\r\nContent-Disposition: form-data; name="payload_json"\r\nContent-Type: application/json\r\n\r\n'
+            .. payload .. "\r\n--" .. boundary .. '\r\nContent-Disposition: form-data; name="files[0]"; filename="'
+            .. evernightArtwork.Filename .. '"\r\nContent-Type: image/jpeg\r\n\r\n'
+            .. evernightArtwork.Bytes .. "\r\n--" .. boundary .. "--\r\n"
+        current.ContentType = "multipart/form-data; boundary=" .. boundary
+        return current
     end
 
     webhookStep = function()
@@ -1936,6 +2280,31 @@ do
             return
         end
         if not url or now < rateGateAt then return end
+        if inventoryBatch and not inventoryBatch.Loading then
+            local batch = inventoryBatch
+            if batch.Epoch ~= epoch or batch.Url ~= url then
+                inventoryBatch = nil
+                state.InventoryWebhookStatus = "ยกเลิกส่งกระเป๋า • ลิงก์เปลี่ยนแล้ว"
+                publish()
+                return
+            end
+            sequence += 1
+            local embed = {
+                author = {name = "🌙 EVERNIGHT"},
+                title = "🌹 ไอเทมในกระเป๋า",
+                description = "ชื่อไอเทมและจำนวน • หน้า " .. batch.Page .. "/" .. #batch.Pages,
+                color = 0xBB305B, fields = batch.Pages[batch.Page],
+                footer = {text = "❄️ EVERNIGHT • หน้า " .. batch.Page .. "/" .. #batch.Pages},
+                timestamp = os.date("!%Y-%m-%dT%H:%M:%SZ"),
+                thumbnail = {url = "attachment://" .. evernightArtwork.Filename},
+            }
+            job = attachArtwork({Url = batch.Url, Epoch = epoch, Kind = "Inventory", Test = false,
+                Steel = 0, Iron = 0, Crystal = 0, Levels = {},
+                InventoryId = batch.Id, InventoryPage = batch.Page, InventoryPages = #batch.Pages,
+                Failures = 0, RateRetries = 0, Attempt = 0, DueAt = now}, embed)
+            sendAttempt(job)
+            return
+        end
         if not testQueued and (not enabled or now < nextBatchAt or (pendingSteel + pendingIron + pendingCrystal == 0 and #pendingLevels == 0)) then return end
         sequence += 1
         local test = testQueued
@@ -2001,23 +2370,712 @@ do
             end
             embed.footer.text = "❄️ EVERNIGHT • " .. player.Name .. "  /  ทุกความก้าวหน้า  /  #" .. sequence
         end
-        local payload = HttpService:JSONEncode({username = "Evernight", embeds = {embed},
-            attachments = {{id = 0, filename = evernightArtwork.Filename, description = "Evernight"}}, allowed_mentions = {parse = {}}})
-        local boundary = "EvernightEternity" .. tostring(sequence) .. "RubyNight"
-        -- Every retry keeps the same payload and original JPEG bytes.
-        local body = "--" .. boundary .. '\r\nContent-Disposition: form-data; name="payload_json"\r\nContent-Type: application/json\r\n\r\n'
-            .. payload .. "\r\n--" .. boundary .. '\r\nContent-Disposition: form-data; name="files[0]"; filename="'
-            .. evernightArtwork.Filename .. '"\r\nContent-Type: image/jpeg\r\n\r\n'
-            .. evernightArtwork.Bytes .. "\r\n--" .. boundary .. "--\r\n"
-        job = {Url = url, Epoch = epoch, Test = test, Steel = amountSteel, Iron = amountIron, Crystal = amountCrystal, Floor = reportFloor,
+        job = attachArtwork({Url = url, Epoch = epoch, Test = test, Steel = amountSteel, Iron = amountIron, Crystal = amountCrystal, Floor = reportFloor,
             Kind = test and "Test" or isLevelBatch and "Levels" or "Ore", Levels = copyEvents(levelBatch),
-            Failures = 0, RateRetries = 0, Attempt = 0, DueAt = now,
-            ContentType = "multipart/form-data; boundary=" .. boundary, Body = body}
+            Failures = 0, RateRetries = 0, Attempt = 0, DueAt = now}, embed)
         sendAttempt(job)
     end
     observeLevels(enabled)
     publish()
 end
+
+-- BEGIN FLOOR 2 QUEST BROWSER
+do
+-- Floor 2 quest catalog: 34 quests (7 NPC / 20 Story / 7 Black Cats), plus 2 Coming Soon placeholders.
+-- Source: work/floor2-quests.json and outputs/floor2-quests.md, inspected 2026-10-24.
+-- Display-only data. Open means released, not that personal prerequisites are already satisfied.
+-- Items contain display strings; Upgrade Stone / Ice Stone quantities are not shown by QuestTalk.
+-- Group = Soon entries are placeholders, not quests; XP/Col = 0 there means no configured reward.
+local floor2QuestCatalog = {
+    {
+        Id = "floor2IceWaspQuest",
+        Title = "Frost-Winged Pests",
+        Group = "NPC",
+        Location = "Frosthaven · NPC1",
+        Summary = "กำจัด Ice Wasp 15 ตัวในทุ่งนอกกำแพง Frosthaven",
+        XP = 950,
+        Col = 650,
+        Items = {},
+        Availability = "Open",
+        UnlockText = "คุยกับ NPC1 ใน Frosthaven; ยืนยันแล้วว่ามีข้อเสนอเควสให้รับ",
+    },
+    {
+        Id = "floor2SnowmanQuest",
+        Title = "Snowmen Gone Wrong",
+        Group = "NPC",
+        Location = "Frosthaven · NPC2",
+        Summary = "กำจัด Evil Snowman 15 ตัวที่รบกวนเส้นทางการค้าระหว่างเมือง",
+        XP = 1100,
+        Col = 750,
+        Items = {},
+        Availability = "Open",
+        UnlockText = "คุยกับ NPC2 ใน Frosthaven; ยืนยันแล้วว่ามีข้อเสนอเควสให้รับ",
+    },
+    {
+        Id = "floor2ApeQuest",
+        Title = "Ape Hunt",
+        Group = "NPC",
+        Location = "Frosthaven · NPC3",
+        Summary = "กำจัด Snow Ape 15 ตัวที่ลงมาจากแนวชั้นหินและโจมตีคลังเสบียง",
+        XP = 1350,
+        Col = 900,
+        Items = {},
+        Availability = "Open",
+        UnlockText = "คุยกับ NPC3 ใน Frosthaven; ยืนยันแล้วว่ามีข้อเสนอเควสให้รับ",
+    },
+    {
+        Id = "floor2MinibossApeQuest",
+        Title = "The Ape King",
+        Group = "NPC",
+        Location = "Eirholm · NPC4",
+        Summary = "กำจัด Snow Ape King 1 ตัว ผู้ควบคุมแนวชั้นหินฝั่งตะวันตก; NPC แนะนำให้รวมปาร์ตี้",
+        XP = 1000,
+        Col = 650,
+        Items = {"Upgrade Stone"},
+        Availability = "Open",
+        UnlockText = "คุยกับ NPC4 ใน Eirholm; ยืนยันแล้วว่ามีข้อเสนอเควสให้รับ",
+    },
+    {
+        Id = "floor2TaurusQuest",
+        Title = "Taurus Patrol",
+        Group = "NPC",
+        Location = "Eirholm · NPC5",
+        Summary = "กำจัด Taurus Sentinel 15 ตัวที่ขวางทุ่งเหนือและเส้นทางไป Labyrinth",
+        XP = 1750,
+        Col = 1200,
+        Items = {},
+        Availability = "Open",
+        UnlockText = "คุยกับ NPC5 ใน Eirholm; ยืนยันแล้วว่ามีข้อเสนอเควสให้รับ",
+    },
+    {
+        Id = "floor2EliteTaurusQuest",
+        Title = "The Elite Guard",
+        Group = "NPC",
+        Location = "Eirholm · NPC6",
+        Summary = "กำจัด Elite Taurus Sentinel 1 ตัวที่ซากปรักหักพังหน้า Labyrinth; NPC แนะนำให้รวมเพื่อนที่แข็งแกร่ง",
+        XP = 1150,
+        Col = 750,
+        Items = {"Upgrade Stone"},
+        Availability = "Open",
+        UnlockText = "คุยกับ NPC6 ใน Eirholm; ยืนยันแล้วว่ามีข้อเสนอเควสให้รับ",
+    },
+    {
+        Id = "floor2SentinelChronicleQuest",
+        Title = "The Sentinel Chronicle",
+        Group = "NPC",
+        Location = "Eirholm · NPC7",
+        Summary = "กำจัด Taurus Sentinel 30 ตัว และ Elite Taurus Sentinel 1 ตัว เพื่อบันทึกชื่อใน Chronicle",
+        XP = 8000,
+        Col = 4000,
+        Items = {"Ice Stone", "Crystallite ×2"},
+        Availability = "Open",
+        UnlockText = "คุยกับ NPC7 ใน Eirholm; ยืนยันแล้วว่ามีข้อเสนอเควสให้รับ",
+    },
+    {
+        Id = "f2_freshStart",
+        Title = "A Fresh Start",
+        Group = "Story",
+        Episode = "EPISODE 1",
+        Level = 20,
+        Location = "Frosthaven · ประตูใต้และทุ่ง Ice Wasp",
+        Summary = "คุย Kirito ที่ประตูใต้ → กำจัด Ice Wasp 8 ตัว → กลับ Frosthaven",
+        XP = 2400,
+        Col = 1500,
+        Items = {},
+        Availability = "Open",
+        UnlockText = "ต้องจบ Beater (เนื้อเรื่องชั้น 1 Episode 4) ก่อน",
+    },
+    {
+        Id = "f2_supplies",
+        Title = "The Missing Supplies",
+        Group = "Story",
+        Episode = "EPISODE 1",
+        Level = 21,
+        Location = "Frosthaven · Supply Coordinator / เส้นทางเสบียงตะวันออก",
+        Summary = "คุย Supply Coordinator → กำจัด Snow Ape 6 ตัว → เก็บลังเสบียง 3 ลัง → ส่งคืน",
+        XP = 2500,
+        Col = 1550,
+        Items = {},
+        Availability = "Open",
+        UnlockText = "ต้องจบ A Fresh Start ก่อน",
+    },
+    {
+        Id = "f2_stillOut",
+        Title = "Somebody's Still Out There",
+        Group = "Story",
+        Episode = "EPISODE 1",
+        Level = 21,
+        Location = "Frosthaven · ประตูใต้ / แคมป์ในแอ่งใต้เมือง",
+        Summary = "คุย Asuna ที่ประตูใต้ → ไปแคมป์ในแอ่งใต้เมือง → กำจัด Evil Snowman 10 ตัว → คุ้มกัน Holt กลับ Frosthaven (มี Evil Snowman ซุ่มโจมตีอีก 2 ตัว)",
+        XP = 2750,
+        Col = 1600,
+        Items = {},
+        Availability = "Open",
+        UnlockText = "ต้องจบ The Missing Supplies ก่อน",
+    },
+    {
+        Id = "f2_leftBehind",
+        Title = "The Things We Left Behind",
+        Group = "Story",
+        Episode = "EPISODE 1",
+        Level = 22,
+        Location = "Frosthaven · Holt ที่ประตูใต้ / แคมป์",
+        Summary = "คุย Holt → เก็บอุปกรณ์ 4 ชิ้น → กำจัด Ice Wasp 8 ตัว → ส่งคืน Holt",
+        XP = 2800,
+        Col = 1800,
+        Items = {},
+        Availability = "Open",
+        UnlockText = "ต้องจบ Somebody's Still Out There ก่อน",
+    },
+    {
+        Id = "f2_yesterday",
+        Title = "Yesterday's Rescue",
+        Group = "Story",
+        Episode = "EPISODE 1",
+        Level = 22,
+        Location = "Frosthaven · Holt / สันเขาตะวันออก",
+        Summary = "คุย Holt → กำจัด Snow Ape 8 ตัวบนสันเขาตะวันออก → เก็บ Fragment",
+        XP = 3600,
+        Col = 1800,
+        Items = {},
+        Availability = "Open",
+        UnlockText = "ต้องจบ The Things We Left Behind ก่อน",
+    },
+    {
+        Id = "f2_wrongWay",
+        Title = "The Wrong Way Home",
+        Group = "Story",
+        Episode = "EPISODE 2",
+        Level = 23,
+        Location = "Frosthaven · ประตูเหนือ / หอคอยบนสันเขา",
+        Summary = "คุย Kirito ที่ประตูเหนือ → กำจัด Snow Ape 10 ตัว → ไปหอคอย A/B → กลับเมือง",
+        XP = 3700,
+        Col = 1800,
+        Items = {},
+        Availability = "Open",
+        UnlockText = "ต้องจบ Yesterday's Rescue ก่อน",
+    },
+    {
+        Id = "f2_room",
+        Title = "The Room That Wasn't There",
+        Group = "Story",
+        Episode = "EPISODE 2",
+        Level = 24,
+        Location = "Frosthaven · Asuna ในเมือง / บ้านนอกประตูเหนือ",
+        Summary = "คุย Asuna → ไปบ้านนอกประตูเหนือ → กำจัด Evil Snowman 6 ตัว → เก็บ Fragment 3 ชิ้น → กลับเมือง",
+        XP = 1900,
+        Col = 2050,
+        Items = {},
+        Availability = "Open",
+        UnlockText = "ต้องจบ The Wrong Way Home ก่อน",
+    },
+    {
+        Id = "f2_footprints",
+        Title = "A Second Set of Footprints",
+        Group = "Story",
+        Episode = "EPISODE 2",
+        Level = 24,
+        Location = "Frosthaven · ประตูตะวันตก / Fracture",
+        Summary = "คุย Kirito ที่ประตูตะวันตก → ตามรอยเท้า → ตรวจ Fracture",
+        XP = 3300,
+        Col = 2000,
+        Items = {},
+        Availability = "Open",
+        UnlockText = "ต้องจบ The Room That Wasn't There ก่อน",
+    },
+    {
+        Id = "f2_remembers",
+        Title = "The Person Who Remembers",
+        Group = "Story",
+        Episode = "EPISODE 2",
+        Level = 25,
+        Location = "Frosthaven · Holt ที่ประตูเหนือ / สันเขา",
+        Summary = "คุย Holt ที่ประตูเหนือ → คุ้มกันขึ้นสันเขา (Snow Ape ซุ่มโจมตีรวม 4 ตัว)",
+        XP = 3600,
+        Col = 1650,
+        Items = {},
+        Availability = "Open",
+        UnlockText = "ต้องจบ A Second Set of Footprints ก่อน",
+    },
+    {
+        Id = "f2_neverHappened",
+        Title = "The Day That Never Happened",
+        Group = "Story",
+        Episode = "EPISODE 2",
+        Level = 26,
+        Location = "Frosthaven · ประตูใต้ / แคมป์",
+        Summary = "คุย Kirito/Asuna ที่ประตูใต้ → กำจัด Evil Snowman 12 ตัวในแคมป์ → ตรวจของข้างกองไฟ",
+        XP = 4000,
+        Col = 2400,
+        Items = {},
+        Availability = "Open",
+        UnlockText = "ต้องจบ The Person Who Remembers ก่อน",
+    },
+    {
+        Id = "f2_northernFortress",
+        Title = "The Northern Fortress",
+        Group = "Story",
+        Episode = "EPISODE 3",
+        Level = 27,
+        Location = "Frosthaven · ประตูเหนือ → ป้อมเหนือ",
+        Summary = "คุย Kirito/Asuna ที่ประตูเหนือ → ไปป้อมเหนือ → กำจัด Taurus Sentinel 6 ตัว และ Elite 3 ตัว → ตรวจประตูป้อม",
+        XP = 3400,
+        Col = 2400,
+        Items = {},
+        Availability = "Locked",
+        UnlockText = "ต้องจบ The Day That Never Happened ก่อน; Episode 3–4 ยังถูกเกมล็อกไว้ รางวัลนี้เป็นข้อมูลที่เตรียมไว้",
+    },
+    {
+        Id = "f2_sentinelRemembered",
+        Title = "The Sentinel That Remembered",
+        Group = "Story",
+        Episode = "EPISODE 3",
+        Level = 28,
+        Location = "ป้อมเหนือ · ห้องบัญชาการ",
+        Summary = "เข้าป้อม → กำจัด Taurus Sentinel Commander → เก็บ Corrupted Core → ตรวจข้อความ",
+        XP = 3500,
+        Col = 2500,
+        Items = {},
+        Availability = "Locked",
+        UnlockText = "ต้องจบ The Northern Fortress ก่อน; Episode 3–4 ยังถูกเกมล็อกไว้ รางวัลนี้เป็นข้อมูลที่เตรียมไว้",
+    },
+    {
+        Id = "f2_roomBehindWall",
+        Title = "The Room Behind the Wall",
+        Group = "Story",
+        Episode = "EPISODE 3",
+        Level = 28,
+        Location = "ป้อมเหนือ · ภายในป้อมและห้องลับ",
+        Summary = "ค้นภายในป้อม → กำจัด Taurus Sentinel 8 ตัว และ Elite 4 ตัว → ค้นจุดกำแพง 3 จุดเพื่อหาห้องลับ → เปิดกลไกกลางห้อง",
+        XP = 3600,
+        Col = 2600,
+        Items = {},
+        Availability = "Locked",
+        UnlockText = "ต้องจบ The Sentinel That Remembered ก่อน; Episode 3–4 ยังถูกเกมล็อกไว้ รางวัลนี้เป็นข้อมูลที่เตรียมไว้",
+    },
+    {
+        Id = "f2_recordsBeneath",
+        Title = "The Records Beneath Aincrad",
+        Group = "Story",
+        Episode = "EPISODE 3",
+        Level = 29,
+        Location = "ป้อมเหนือ · หอจดหมายเหตุใต้ป้อม",
+        Summary = "ลงหอจดหมายเหตุ → Taurus Sentinel 5 ตัว + Elite 1 ตัว → เก็บบันทึก 3 ชิ้น/เปิด Archive → สู้ Sentinel 5 ตัว + Elite 1 ตัวขากลับ",
+        XP = 3700,
+        Col = 2700,
+        Items = {},
+        Availability = "Locked",
+        UnlockText = "ต้องจบ The Room Behind the Wall ก่อน; Episode 3–4 ยังถูกเกมล็อกไว้ รางวัลนี้เป็นข้อมูลที่เตรียมไว้",
+    },
+    {
+        Id = "f2_neverExisted",
+        Title = "The Floor That Never Existed",
+        Group = "Story",
+        Episode = "EPISODE 3",
+        Level = 29,
+        Location = "ป้อมเหนือ · Archive / Kirito",
+        Summary = "กลับ Archive → ตรวจกลไก → Taurus Sentinel 5 ตัว → เก็บ Fragment → กลับหา Kirito",
+        XP = 3800,
+        Col = 3000,
+        Items = {},
+        Availability = "Locked",
+        UnlockText = "ต้องจบ The Records Beneath Aincrad ก่อน; Episode 3–4 ยังถูกเกมล็อกไว้ รางวัลนี้เป็นข้อมูลที่เตรียมไว้",
+    },
+    {
+        Id = "f2_marchOfDead",
+        Title = "The March of the Dead",
+        Group = "Story",
+        Episode = "EPISODE 4",
+        Level = 30,
+        Location = "ป้อมเหนือ · ลานป้อม → ภายในป้อม",
+        Summary = "ลานป้อม → Taurus Sentinel 8 ตัว + Elite 4 ตัว → ตามกองทัพเข้าไปในป้อม",
+        XP = 3900,
+        Col = 2800,
+        Items = {},
+        Availability = "Locked",
+        UnlockText = "ต้องจบ The Floor That Never Existed ก่อน; Episode 3–4 ยังถูกเกมล็อกไว้ รางวัลนี้เป็นข้อมูลที่เตรียมไว้",
+    },
+    {
+        Id = "f2_executioner",
+        Title = "The General's Executioner",
+        Group = "Story",
+        Episode = "EPISODE 4",
+        Level = 30,
+        Location = "ป้อมเหนือ · สนามรบชั้นใน / ทางเข้า Arena",
+        Summary = "เข้าสนามรบ → กำจัด Elite Taurus Sentinel Commander → ตรวจ Fracture → ไปทางเข้า Arena",
+        XP = 4000,
+        Col = 3000,
+        Items = {},
+        Availability = "Locked",
+        UnlockText = "ต้องจบ The March of the Dead ก่อน; Episode 3–4 ยังถูกเกมล็อกไว้ รางวัลนี้เป็นข้อมูลที่เตรียมไว้",
+    },
+    {
+        Id = "f2_alreadyDied",
+        Title = "The General Who Already Died",
+        Group = "Story",
+        Episode = "EPISODE 4",
+        Level = 31,
+        Location = "ป้อมเหนือ · ผนึกและทางเข้า Arena",
+        Summary = "เปิดผนึก Arena 3 จุด → Taurus Sentinel 5 ตัว + Elite 1 ตัว → เข้า Arena → ตรวจข้อความระบบ",
+        XP = 4100,
+        Col = 3100,
+        Items = {},
+        Availability = "Locked",
+        UnlockText = "ต้องจบ The General's Executioner ก่อน; Episode 3–4 ยังถูกเกมล็อกไว้ รางวัลนี้เป็นข้อมูลที่เตรียมไว้",
+    },
+    {
+        Id = "f2_baran",
+        Title = "Baran the General Taurus",
+        Group = "Story",
+        Episode = "EPISODE 4",
+        Level = 31,
+        Location = "ป้อมเหนือ · Arena ของ Baran",
+        Summary = "สู้ Baran 3 ช่วง: Story → Fractured → Last Stand",
+        XP = 4500,
+        Col = 4500,
+        Items = {},
+        Availability = "Locked",
+        UnlockText = "ต้องจบ The General Who Already Died ก่อน; Episode 3–4 ยังถูกเกมล็อกไว้ รางวัลนี้เป็นข้อมูลที่เตรียมไว้",
+    },
+    {
+        Id = "f2_restorationFailed",
+        Title = "Restoration Failed",
+        Group = "Story",
+        Episode = "EPISODE 4",
+        Level = 31,
+        Location = "Arena → นอกป้อม → Frosthaven",
+        Summary = "รอดจาก Arena ถล่ม → หนี Fracture → ออกจากป้อม → กลับเมือง",
+        XP = 4300,
+        Col = 4000,
+        Items = {},
+        Availability = "Locked",
+        UnlockText = "ต้องจบ Baran the General Taurus ก่อน; Episode 3–4 ยังถูกเกมล็อกไว้ รางวัลนี้เป็นข้อมูลที่เตรียมไว้",
+    },
+    {
+        Id = "m_bc1",
+        Title = "A Party in Trouble",
+        Group = "BlackCats",
+        Episode = "The Black Cats  -  1 / 6",
+        Level = 31,
+        Location = "Frosthaven · Shy Girl ที่ประตูใต้ / เนินตะวันออกเฉียงใต้",
+        Summary = "คุย Shy Girl/Sachi → ไปเนินตะวันออกเฉียงใต้ → Snow Ape 8 ตัว → พบ Black Cats ที่กองไฟ",
+        XP = 1000,
+        Col = 3200,
+        Items = {},
+        Availability = "Locked",
+        UnlockText = "ต้องจบ Restoration Failed ก่อน; สาย Black Cats เริ่มหลัง Restoration Failed ใน Episode 4 ซึ่งเกมยังล็อกไว้",
+        RepeatText = "ทำได้ครั้งเดียว",
+    },
+    {
+        Id = "m_bc2",
+        Title = "A Sword and a Shield",
+        Group = "BlackCats",
+        Episode = "The Black Cats  -  2 / 6",
+        Level = 31,
+        Location = "Frosthaven · Guild Leader ที่กองไฟ / ทุ่งใต้เมือง",
+        Summary = "คุย Guild Leader/Keita → คุ้มกัน Shy Girl ในสนามใต้เมือง → Ice Wasp 9 ตัว → กลับกองไฟ",
+        XP = 1100,
+        Col = 3300,
+        Items = {},
+        Availability = "Locked",
+        UnlockText = "ต้องจบ A Party in Trouble ก่อน; สาย Black Cats เริ่มหลัง Restoration Failed ใน Episode 4 ซึ่งเกมยังล็อกไว้",
+        RepeatText = "ทำได้ครั้งเดียว",
+    },
+    {
+        Id = "m_bc3",
+        Title = "Hunting Party",
+        Group = "BlackCats",
+        Episode = "The Black Cats  -  3 / 6",
+        Level = 32,
+        Location = "Frosthaven · Loudmouth ที่กองไฟ / แคมป์ / เส้นทางตะวันออก",
+        Summary = "คุย Loudmouth/Ducker → Evil Snowman 7 ตัว + Snow Ape 6 ตัว → กลับกองไฟ",
+        XP = 1200,
+        Col = 3600,
+        Items = {},
+        Availability = "Locked",
+        UnlockText = "ต้องจบ A Sword and a Shield ก่อน; สาย Black Cats เริ่มหลัง Restoration Failed ใน Episode 4 ซึ่งเกมยังล็อกไว้",
+        RepeatText = "ทำได้ครั้งเดียว",
+    },
+    {
+        Id = "m_bc4",
+        Title = "Where Shy Girl Went",
+        Group = "BlackCats",
+        Episode = "The Black Cats  -  4 / 6",
+        Level = 32,
+        Location = "Frosthaven · Guild Leader ที่กองไฟ / ทะเลสาบน้ำแข็ง",
+        Summary = "คุย Guild Leader → ค้นนอกประตูเหนือ → ตามรอยถึงทะเลสาบ → พา Shy Girl กลับ",
+        XP = 1150,
+        Col = 3300,
+        Items = {},
+        Availability = "Locked",
+        UnlockText = "ต้องจบ Hunting Party ก่อน; สาย Black Cats เริ่มหลัง Restoration Failed ใน Episode 4 ซึ่งเกมยังล็อกไว้",
+        RepeatText = "ทำได้ครั้งเดียว",
+    },
+    {
+        Id = "m_bc5",
+        Title = "A Home for the Cats",
+        Group = "BlackCats",
+        Episode = "The Black Cats  -  5 / 6",
+        Level = 32,
+        Location = "Frosthaven · Guild Leader ที่กองไฟ / บ้านฝั่งตะวันออก",
+        Summary = "คุย Guild Leader → Ice Wasp 7 ตัว + Snow Ape 4 ตัว → พบกิลด์ที่บ้านฝั่งตะวันออก",
+        XP = 1300,
+        Col = 3500,
+        Items = {},
+        Availability = "Locked",
+        UnlockText = "ต้องจบ Where Shy Girl Went ก่อน; สาย Black Cats เริ่มหลัง Restoration Failed ใน Episode 4 ซึ่งเกมยังล็อกไว้",
+        RepeatText = "ทำได้ครั้งเดียว",
+    },
+    {
+        Id = "m_bc6",
+        Title = "One Last Run",
+        Group = "BlackCats",
+        Episode = "The Black Cats  -  6 / 6",
+        Level = 33,
+        Location = "Frosthaven · Loudmouth ที่ประตูเหนือ → ห้องกับดักในป้อม",
+        Summary = "คุย Loudmouth ที่ประตูเหนือ → ไปประตูป้อม → กำจัด Taurus Sentinel 4 ตัว → หยุด Loudmouth ที่ประตูและหีบกับดัก → เอาชีวิตรอดจาก Taurus Sentinel 7 ตัว และ Elite 1 ตัว",
+        XP = 2000,
+        Col = 4000,
+        Items = {},
+        Availability = "Locked",
+        UnlockText = "ต้องจบ A Home for the Cats ก่อน; สาย Black Cats เริ่มหลัง Restoration Failed ใน Episode 4 ซึ่งเกมยังล็อกไว้",
+        RepeatText = "ทำได้ครั้งเดียว",
+    },
+    {
+        Id = "m_bc8",
+        Title = "A Rumour for Christmas Eve",
+        Group = "BlackCats",
+        Episode = "The Black Cats  -  Christmas Eve",
+        Level = 33,
+        Location = "Frosthaven · Info Broker ระหว่างบ้าน / ทุ่งเหนือเมือง / บ้านกิลด์",
+        Summary = "คุย Info Broker/Argo → พบ Kirito นอกประตูเหนือ → Snow Ape 6 ตัว + Evil Snowman 3 ตัว → กลับบ้านกิลด์",
+        XP = 1850,
+        Col = 4000,
+        Items = {},
+        Availability = "Locked",
+        UnlockText = "ต้องจบ One Last Run ก่อน; สาย Black Cats เริ่มหลัง Restoration Failed ใน Episode 4 ซึ่งเกมยังล็อกไว้; เควสนี้ถูกเกมปิดไว้เพิ่มเติม (closed)",
+        RepeatText = "ทำได้ครั้งเดียว",
+    },
+    {
+        Id = "f2_episode3Soon",
+        Title = "Episode 3",
+        Group = "Soon",
+        Episode = "EPISODE 3",
+        Location = "ชั้น 2 · Episode 3",
+        Summary = "Episode 3 is coming soon... — หน้าข้อความรออัปเดตหลังจบ Episode 2",
+        XP = 0,
+        Col = 0,
+        Items = {},
+        Availability = "ComingSoon",
+        UnlockText = "เป็นข้อความ Coming Soon แยกจาก 34 เควสจริง; ยังไม่มีรางวัลกำหนดไว้",
+    },
+    {
+        Id = "f2_floor3Soon",
+        Title = "Floor 3",
+        Group = "Soon",
+        Episode = "FLOOR 3",
+        Location = "ชั้น 3",
+        Summary = "Floor 3's story is coming soon... — หน้าข้อความรออัปเดต",
+        XP = 0,
+        Col = 0,
+        Items = {},
+        Availability = "ComingSoon",
+        UnlockText = "เป็นข้อความ Coming Soon แยกจาก 34 เควสจริง; ยังไม่มีรางวัลกำหนดไว้",
+    },
+}
+-- Read-only Floor 2 quest browser. No travel, quest, reward, or combat requests.
+questBrowser = {Rows = {}, Filters = {}}
+do
+    local api, byId = questBrowser, {}
+    local groups = {All = "ทั้งหมด", NPC = "NPC", Story = "เนื้อเรื่อง", BlackCats = "Black Cats", Soon = "เร็ว ๆ นี้"}
+    local statuses = {Open = "เปิดแล้ว", Locked = "ยังล็อก", ComingSoon = "เร็ว ๆ นี้", Complete = "ผ่านแล้ว"}
+    for _, q in floor2QuestCatalog do byId[q.Id] = q end
+    state.QuestFilter = groups[previousSettings.QuestFilter] and previousSettings.QuestFilter or "All"
+    state.QuestSearch = type(previousSettings.QuestSearch) == "string" and previousSettings.QuestSearch:sub(1,120) or ""
+    state.SelectedQuest = byId[previousSettings.SelectedQuest] and previousSettings.SelectedQuest or nil
+    local function storyData()
+        local ok, data = pcall(function()return require(player.PlayerScripts.Client.State).get()end)
+        return ok and type(data) == "table" and type(data.story2) == "table" and data.story2 or {}
+    end
+    local function status(q, story)
+        if q.Group == "Story" and type(story.completed) == "table" and story.completed[q.Id] == true then return "Complete" end
+        return q.Availability
+    end
+    local function matches(q)
+        if state.QuestFilter == "All" then
+            if q.Group == "Soon" then return false end
+        elseif q.Group ~= state.QuestFilter then return false end
+        local query = state.QuestSearch:lower()
+        local haystack = table.concat({q.Title,q.Id,groups[q.Group] or "",q.Episode or "",q.Location or "",q.Summary or "",
+            q.UnlockText or "",table.concat(q.Items or {}," "),tostring(q.XP or 0),tostring(q.Col or 0),uiNumber(q.XP),uiNumber(q.Col)}," "):lower()
+        return query == "" or haystack:find(query,1,true) ~= nil
+    end
+    function state.GetQuestInfo(id)
+        local q = byId[id]
+        if not q then return nil end
+        return {Id=q.Id,Title=q.Title,Group=q.Group,Episode=q.Episode,Level=q.Level,Location=q.Location,Summary=q.Summary,
+            XP=q.XP,Col=q.Col,Items=table.clone(q.Items or {}),Status=status(q,storyData()),UnlockText=q.UnlockText,RepeatText=q.RepeatText}
+    end
+    function state.GetQuestBrowserState()
+        local count = 0
+        for _, q in floor2QuestCatalog do if matches(q) then count += 1 end end
+        return {Filter=state.QuestFilter,Search=state.QuestSearch,Selected=state.SelectedQuest,VisibleCount=count,
+            QuestCount=34,ComingSoonCount=2,DetailVisible=state.SelectedQuest~=nil,ReadOnly=true}
+    end
+    function state.SetQuestFilter(group)
+        if not groups[group] then return false end
+        state.QuestFilter,state.SelectedQuest=group,nil
+        if api.Scroll then api.Scroll.CanvasPosition=Vector2.zero end
+        api.Update(true)
+        return true
+    end
+    function state.SetQuestSearch(value)
+        state.QuestSearch=tostring(value or ""):sub(1,120)
+        if api.Search and api.Search.Text~=state.QuestSearch then api.Search.Text=state.QuestSearch end
+        if api.Scroll then api.Scroll.CanvasPosition=Vector2.zero end
+        api.Update(true)
+    end
+    function state.SelectQuest(id)
+        if not byId[id] then return false end
+        state.SelectedQuest=id
+        api.ReleaseFocus()
+        if api.DetailScroll then api.DetailScroll.CanvasPosition=Vector2.zero end
+        api.Update(true)
+        return true
+    end
+    function state.ShowQuestList()
+        state.SelectedQuest=nil
+        api.Update(true)
+    end
+    function api.ReleaseFocus()
+        if api.Search and api.Search:IsFocused() then api.Search:ReleaseFocus(false) end
+    end
+    function api.Update(force)
+        if not api.Frame then return end
+        local visible = currentFloor==2 and state.Mode=="Quest" and not state.SettingsOpen
+        api.Frame.Visible=visible
+        if not visible then api.ReleaseFocus() return end
+        local story, signature = storyData(), {}
+        for _,q in floor2QuestCatalog do table.insert(signature,status(q,story)) end
+        local key=state.QuestFilter.."\0"..state.QuestSearch.."\0"..tostring(state.SelectedQuest)..table.concat(signature,",")
+        if key==api.LastKey and not force then return end
+        api.LastKey=key
+        local selected=byId[state.SelectedQuest]
+        api.ListPage.Visible,api.DetailPage.Visible=selected==nil,selected~=nil
+        api.Clear.Visible=state.QuestSearch~=""
+        for group,b in api.Filters do view.PaintButton(b,state.QuestFilter==group) end
+        local count=0
+        for _,q in floor2QuestCatalog do
+            local b, show = api.Rows[q.Id], matches(q)
+            b.Visible=show
+            if show then count+=1 end
+            local s=status(q,story)
+            b.Status.Text=statuses[s] or s
+            b.Status.TextColor3=(s=="Open" or s=="Complete") and theme.Frost or theme.Muted
+        end
+        api.Count.Text=state.QuestFilter=="Soon" and (count.." รายการรออัปเดต · ไม่มีรางวัลกำหนด")
+            or ("แสดง "..count.." / 34 เควส · กดเพื่อดูรางวัล")
+        api.Empty.Visible=count==0 and selected==nil
+        if selected then
+            local q,s=selected,status(selected,story)
+            api.Badge.Text=statuses[s] or s
+            api.Badge.TextColor3=(s=="Open" or s=="Complete") and theme.Frost or theme.AccentLight
+            api.DetailTitle.Text=q.Title
+            api.Meta.Text=(groups[q.Group] or q.Group)..(q.Episode and (" · "..q.Episode) or "")..(q.Level and (" · Lv."..q.Level) or "")
+            api.Location.Text="จุดเริ่ม: "..(q.Location or "ตามเนื้อเรื่อง")
+            api.Rewards.Text=q.Group=="Soon" and "ยังไม่กำหนดรางวัล" or (uiNumber(q.XP).." XP   ·   "..uiNumber(q.Col).." Col")
+            api.Items.Text=#(q.Items or {})>0 and table.concat(q.Items,"\n") or "ไม่มีไอเทมรางวัลเพิ่มเติม"
+            api.Objective.Text=q.Summary or "รอข้อมูลจากเกม"
+            api.Unlock.Text=(s=="Complete" and "ตัวละครนี้ผ่านแล้ว\n" or "")..(q.UnlockText or "เปิดให้ดูข้อมูลแล้ว")
+                ..(q.RepeatText and ("\n"..q.RepeatText) or "")
+        end
+    end
+    function api.Mount(parent,h)
+        local make,button=h.Make,h.Button
+        local frame=make("Frame",{Name="QuestBrowser",BackgroundTransparency=1,Position=UDim2.fromOffset(12,92),Size=UDim2.fromOffset(280,306),Visible=false},parent)
+        api.Frame=frame
+        api.ListPage=make("Frame",{Name="ListPage",Size=UDim2.fromScale(1,1),BackgroundTransparency=1},frame)
+        local title=h.Text("Title","เควส · โลก 2",0,0,200,22,api.ListPage,16,theme.Text)
+        title.Font=Enum.Font.GothamBold
+        local total=h.Text("Total","34 เควส",204,1,76,20,api.ListPage,11,theme.Frost)
+        total.TextXAlignment=Enum.TextXAlignment.Right
+        api.Search=h.Field("QuestSearch",state.QuestSearch,"ค้นหาชื่อ / มอน / ไอเทมรางวัล",0,28,280,28,api.ListPage)
+        api.Search.TextSize=11
+        api.Search.UIPadding.PaddingRight=UDim.new(0,30)
+        connect(api.Search:GetPropertyChangedSignal("Text"),function()state.SetQuestSearch(api.Search.Text)end)
+        api.Clear=button("×",UDim2.fromOffset(24,22),UDim2.fromOffset(252,31),api.ListPage)
+        api.Clear.Name,api.Clear.BackgroundTransparency="ClearQuestSearch",1
+        connect(api.Clear.Activated,function()state.SetQuestSearch("")end)
+        local x=0
+        for _,g in {{"All",46},{"NPC",43},{"Story",70},{"BlackCats",65},{"Soon",44}} do
+            local b=button(groups[g[1]],UDim2.fromOffset(g[2],25),UDim2.fromOffset(x,63),api.ListPage)
+            b.Name,b.TextSize="Filter_"..g[1],10
+            api.Filters[g[1]]=b
+            local group=g[1]
+            connect(b.Activated,function()state.SetQuestFilter(group)end)
+            x+=g[2]+3
+        end
+        api.Count=h.Text("ResultCount","",0,92,280,17,api.ListPage,10,theme.Muted)
+        api.Scroll=make("ScrollingFrame",{Name="QuestList",Position=UDim2.fromOffset(0,113),Size=UDim2.fromOffset(280,171),BackgroundTransparency=1,
+            BorderSizePixel=0,ScrollBarThickness=3,ScrollBarImageColor3=theme.Accent,CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y,ClipsDescendants=true},api.ListPage)
+        make("UIListLayout",{Padding=UDim.new(0,5),SortOrder=Enum.SortOrder.LayoutOrder},api.Scroll)
+        make("UIPadding",{PaddingTop=UDim.new(0,1),PaddingLeft=UDim.new(0,1),PaddingBottom=UDim.new(0,2)},api.Scroll)
+        for order,q in floor2QuestCatalog do
+            local b=button("",UDim2.new(1,-6,0,52),UDim2.new(),api.Scroll)
+            b.Name,b.LayoutOrder="Quest_"..q.Id,order
+            b.BackgroundTransparency=.34
+            local label=h.Text("Title",q.Title,10,5,204,21,b,12,theme.Text)
+            label.Font=Enum.Font.GothamBold
+            h.Text("Status","",217,6,50,18,b,9,theme.Frost).TextXAlignment=Enum.TextXAlignment.Right
+            h.Text("Reward",q.Group=="Soon" and "Coming Soon · ยังไม่กำหนดรางวัล" or
+                (uiNumber(q.XP).." XP · "..uiNumber(q.Col).." Col"..(#(q.Items or {})>0 and " · ไอเทม" or "")),10,29,254,17,b,10,theme.Muted)
+            api.Rows[q.Id]=b
+            local id=q.Id
+            connect(b.Activated,function()state.SelectQuest(id)end)
+        end
+        api.Empty=h.Text("Empty","ไม่พบเควสนี้\nลองชื่อมอน ไอเทม หรือหมวดอื่น",8,140,264,62,api.ListPage,12,theme.Muted)
+        api.Empty.TextWrapped=true
+        api.DetailPage=make("Frame",{Name="DetailPage",Size=UDim2.fromScale(1,1),BackgroundTransparency=1,Visible=false},frame)
+        local back=button("‹ รายการ",UDim2.fromOffset(80,27),UDim2.fromOffset(0,0),api.DetailPage)
+        back.Name,back.TextSize="BackToQuestList",11
+        connect(back.Activated,state.ShowQuestList)
+        api.Badge=h.Text("Availability","",90,3,190,21,api.DetailPage,11,theme.Frost)
+        api.Badge.TextXAlignment=Enum.TextXAlignment.Right
+        api.DetailScroll=make("ScrollingFrame",{Name="QuestDetails",Position=UDim2.fromOffset(0,36),Size=UDim2.fromOffset(280,248),BackgroundTransparency=1,
+            BorderSizePixel=0,ScrollBarThickness=3,ScrollBarImageColor3=theme.Accent,CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y,ClipsDescendants=true},api.DetailPage)
+        make("UIListLayout",{Padding=UDim.new(0,7),SortOrder=Enum.SortOrder.LayoutOrder},api.DetailScroll)
+        make("UIPadding",{PaddingLeft=UDim.new(0,2),PaddingTop=UDim.new(0,1),PaddingBottom=UDim.new(0,8)},api.DetailScroll)
+        local order=0
+        local function detailText(name,size,color,bold)
+            order+=1
+            local l=h.Text(name,"",0,0,268,0,api.DetailScroll,size,color)
+            l.Size,l.AutomaticSize=UDim2.new(1,-8,0,0),Enum.AutomaticSize.Y
+            l.TextWrapped,l.TextTruncate,l.TextYAlignment=true,Enum.TextTruncate.None,Enum.TextYAlignment.Top
+            l.LayoutOrder=order
+            if bold then l.Font=Enum.Font.GothamBold end
+            return l
+        end
+        api.DetailTitle=detailText("QuestTitle",17,theme.Text,true)
+        api.Meta=detailText("Category",10,theme.Muted)
+        api.Location=detailText("Location",11,theme.Frost)
+        local rewards=h.Card("Rewards",0,0,268,62,api.DetailScroll)
+        order+=1
+        rewards.Size,rewards.LayoutOrder=UDim2.new(1,-8,0,62),order
+        h.Text("Heading","รางวัลที่ได้รับ",10,5,246,18,rewards,10,theme.Muted)
+        api.Rewards=h.Text("Amount","",10,25,246,26,rewards,14,theme.AccentLight)
+        api.Rewards.Font=Enum.Font.GothamBold
+        detailText("ItemHeading",11,theme.Muted,true).Text="ไอเทมรางวัล"
+        api.Items=detailText("Items",12,theme.Frost)
+        detailText("ObjectiveHeading",11,theme.Muted,true).Text="เป้าหมาย"
+        api.Objective=detailText("Objective",12,theme.Text)
+        detailText("UnlockHeading",11,theme.Muted,true).Text="เงื่อนไข / สถานะ"
+        api.Unlock=detailText("Unlock",11,theme.Frost)
+        h.Text("ReadOnly","ดูข้อมูลเท่านั้น · ยังไม่รับหรือทำออโต้",0,290,280,16,frame,10,theme.Muted)
+        api.Update(true)
+    end
+end
+end
+-- END FLOOR 2 QUEST BROWSER
 
 local function updateStatus()
     if not statusLabel then return end
@@ -2070,7 +3128,7 @@ local function updateStatus()
         detail ..= "\nสำเร็จ " .. uiNumber(state.QuestRuns) .. " รอบ  ·  พลาด " .. uiNumber(state.QuestFailures) .. " รอบ"
         action = state.Enabled and "หยุดออโต้เควส" or "เริ่มออโต้เควส"
         if currentFloor == 2 then
-            heading, detail = "เควสชั้น 2 • ตรวจข้อมูลเท่านั้น", "ยังไม่เปิดออโต้เควส\nรายการพร้อมรางวัลอยู่ในรายงานเควสชั้น 2"
+            heading, detail = "เควสชั้น 2 • ตรวจข้อมูลเท่านั้น", "เลือกเควสเพื่อดูเป้าหมาย รางวัล และเงื่อนไข"
             action, actionColor = "ยังไม่เปิดออโต้เควสชั้น 2", theme.Disabled
         end
     elseif state.Mode == "Mining" then
@@ -2106,8 +3164,9 @@ local function updateStatus()
     warpButton.Text = state.AutoTownWarp and "วาร์ป: เปิด" or "วาร์ป: ปิด"
     view.Search.TextEditable = not state.Selling and not state.Crafting and not state.Travelling
     view.ClearSearch.Visible = view.Search.Text ~= ""
-    view.Search.PlaceholderText = state.Mode == "Sell" and "ค้นหาชื่ออาวุธ / รหัสชิ้น" or state.Mode == "Craft" and "ค้นหาชนิดอาวุธ" or state.Mode == "Mining" and "ค้นหา Steel / Iron" or "ค้นหามอนสเตอร์"
-    view.Main.Visible, view.Settings.Visible = not state.SettingsOpen, state.SettingsOpen
+    view.Search.PlaceholderText = state.Mode == "Sell" and "ค้นหาชื่ออาวุธ / รหัสชิ้น" or state.Mode == "Craft" and "ค้นหาชนิดอาวุธ" or state.Mode == "Mining" and (currentFloor == 2 and "ค้นหา Crystallite / เขตขุด" or "ค้นหา Steel / Iron") or "ค้นหามอนสเตอร์"
+    view.Main.Visible, view.Settings.Visible = not state.SettingsOpen and not (currentFloor == 2 and state.Mode == "Quest"), state.SettingsOpen
+    questBrowser.Update()
     view.MaterialPopup.Visible = state.Mode == "Craft" and state.MaterialPickerOpen and not state.SettingsOpen
     view.PaintButton(combatTab, state.Mode == "Combat")
     view.PaintButton(miningTab, state.Mode == "Mining")
@@ -2151,6 +3210,17 @@ local function updateStatus()
     view.SkillPicker.Visible = state.SkillPickerOpen and not state.SettingsOpen
     view.SkillsToggle.Text = state.SkillsEnabled and "ออโต้สกิล: เปิด" or "ออโต้สกิล: ปิด"
     view.PaintButton(view.SkillsToggle,state.SkillsEnabled)
+    if view.InventoryButton then
+        local busy = state.InventoryWebhookBusy == true
+        local remaining = math.max(0,math.ceil((state.InventoryWebhookCooldownUntil or 0)-os.clock()))
+        view.InventoryButton.Text = busy and "ส่ง..." or remaining>0 and ("รอ "..remaining) or "ไอเทม"
+        view.InventoryButton.Active,view.InventoryButton.AutoButtonColor = not busy,not busy
+        view.PaintButton(view.InventoryButton,busy)
+        if busy then state.InventoryNoticeUntil = os.clock()+5 end
+        view.InventoryToast.Visible = os.clock()<(state.InventoryNoticeUntil or 0)
+        autoRespawnButton.Visible,view.Keys.Visible = not view.InventoryToast.Visible,not view.InventoryToast.Visible
+        view.InventoryNoticeText.Text = state.InventoryWebhookStatus or "ส่งเฉพาะไอเทมในกระเป๋าไป Discord"
+    end
     if previous and setIdentity then setIdentity(previous) end
 end
 
@@ -2170,6 +3240,7 @@ end
 function state.ShowSettings(open)
     state.SettingsOpen, state.MaterialPickerOpen, state.SkillPickerOpen = open == true, false, false
     if state.SettingsOpen and view.Search then view.Search:ReleaseFocus(false) end
+    if state.SettingsOpen then questBrowser.ReleaseFocus() end
     if not state.SettingsOpen and webhookBox then webhookBox:ReleaseFocus(false) end
     if not state.SettingsOpen and view.PotionThreshold then view.PotionThreshold:ReleaseFocus(false) end
     updateStatus()
@@ -2341,7 +3412,7 @@ function state.SetEnabled(enabled)
         forgeQuest.Reset()
         if enabled then forgeQuest.CloseMenus() end
     end
-    if not enabled then cancelAction() end
+    if not enabled then cancelAction() motionController.Release() end
     if state.Enabled == (enabled == true) then return end
     if enabled then
         for _, previous in inheritedRestores do
@@ -2713,6 +3784,7 @@ function state.ShowMenu(show)
         if webhookBox then webhookBox:ReleaseFocus(false) end
         if craftQuantityBox then craftQuantityBox:ReleaseFocus(false) end
         if sellSearchBox then sellSearchBox:ReleaseFocus(false) end
+        questBrowser.ReleaseFocus()
         UIS.MouseBehavior, UIS.MouseIconEnabled = Enum.MouseBehavior.LockCenter, false
     end
 end
@@ -2975,15 +4047,22 @@ local function createGui()
     make("UIGradient", {Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0,1),NumberSequenceKeypoint.new(0.3,0),
         NumberSequenceKeypoint.new(0.7,0),NumberSequenceKeypoint.new(1,1)})}, edge)
     local title = make("Frame", {Name = "DragHandle", BackgroundTransparency = 1,
-        Position = UDim2.fromOffset(12,6), Size = UDim2.fromOffset(171,40), Active = true}, panel)
+        Position = UDim2.fromOffset(12,6), Size = UDim2.fromOffset(124,40), Active = true}, panel)
     local sigil = make("Frame", {Name = "Sigil", Position = UDim2.fromOffset(8,13), Size = UDim2.fromOffset(11,11),
         Rotation = 45, BackgroundColor3 = theme.Accent, BorderSizePixel = 0}, title)
     make("UIStroke",{Color = theme.AccentLight,Transparency = 0.25,Thickness = 1},sigil)
     make("Frame",{Position = UDim2.fromOffset(4,4),Size = UDim2.fromOffset(3,3),
         BackgroundColor3 = theme.Frost,BorderSizePixel = 0},sigil)
-    local brand = text("Brand","EVERNIGHT",28,1,142,23,title,17)
+    local brand = text("Brand","EVERNIGHT",28,1,98,23,title,15)
     brand.Font = Enum.Font.GothamBold
-    text("Subtitle","E T E R N I T Y  /  C O N T R O L",29,25,140,11,title,7,theme.Muted)
+    text("Subtitle","E T E R N I T Y",29,25,98,11,title,7,theme.Muted)
+    view.InventoryButton = button("ไอเทม",UDim2.fromOffset(44,26),UDim2.fromOffset(140,13),panel)
+    view.InventoryButton.Name,view.InventoryButton.TextSize = "SendInventoryToDiscord",10
+    connect(view.InventoryButton.Activated,function()
+        state.InventoryNoticeUntil = os.clock()+8
+        state.SendInventoryWebhook()
+        updateStatus()
+    end)
     view.SettingsButton = button("ตั้งค่า",UDim2.fromOffset(42,26),UDim2.fromOffset(188,13),panel)
     view.SettingsButton.Name,view.SettingsButton.TextSize = "OpenSettings",11
     connect(view.SettingsButton.Activated,function()state.ShowSettings(not state.SettingsOpen)end)
@@ -3020,7 +4099,7 @@ local function createGui()
         view.QuestInfo.Subtitle.Text = "ตรวจข้อมูลเควสและรางวัล"
         view.QuestInfo.Duration.Text = "เนื้อเรื่อง EP.1–2 เปิดแล้ว"
         view.QuestInfo.Reward.Text = "EP.3–4 ยังล็อก / Coming Soon"
-        view.QuestInfo.Items.Text = "เควสย่อยบางรายการรอปลดล็อกเนื้อเรื่อง"
+        view.QuestInfo.Items.Text = "NPC 7  ·  เนื้อเรื่อง 20  ·  Black Cats 7"
         view.QuestInfo.Steps.Text, view.QuestInfo.Steps.Size = "ยังไม่เปิดออโต้เควส", UDim2.fromOffset(256,22)
     end
     view.Search = field("Search",state.UiSearch[state.Mode] or "","ค้นหา",0,0,280,26,view.Main)
@@ -3187,7 +4266,12 @@ local function createGui()
     autoRespawnButton.Name,autoRespawnButton.TextSize,autoRespawnButton.BackgroundTransparency = "ToggleFreeRespawn",10,1
     autoRespawnButton.Outline.Transparency = 1
     connect(autoRespawnButton.Activated,function()state.SetAutoRespawn(not state.AutoRespawn)end)
-    text("Keys","Shift: เมนู   ·   F6 / F7",138,404,154,18,panel,10,theme.Muted).TextXAlignment = Enum.TextXAlignment.Right
+    view.Keys = text("Keys","Shift: เมนู   ·   F6 / F7",138,404,154,18,panel,10,theme.Muted)
+    view.Keys.TextXAlignment = Enum.TextXAlignment.Right
+    view.InventoryToast = card("InventoryNotice",12,400,280,25,panel)
+    view.InventoryToast.ZIndex,view.InventoryToast.Visible = 60,false
+    view.InventoryNoticeText = text("Message","",8,3,264,19,view.InventoryToast,10,theme.Frost)
+    view.InventoryNoticeText.ZIndex = 61
     reopen = make("ImageButton",{Name="OpenMenu",Visible=false,Size=UDim2.fromOffset(56,56),
         Position=UDim2.new(0,18,1,-74),BackgroundColor3=theme.Surface,BorderSizePixel=0,
         Image=evernightArtwork.Asset or "",ImageRectOffset=Vector2.new(120,330),ImageRectSize=Vector2.new(500,500),
@@ -3230,30 +4314,22 @@ local function createGui()
         elseif input.KeyCode==Enum.KeyCode.F6 then state.ToggleMode("Combat")
         elseif input.KeyCode==Enum.KeyCode.F7 then state.ToggleMode("Mining") end
     end)
-    RunService:BindToRenderStep(cursorBinding,Enum.RenderPriority.Last.Value+10,function()
+    RunService:BindToRenderStep(cursorBinding,Enum.RenderPriority.Last.Value+10,function(dt)
+        local focused=combat.IsFocused()
         if state.Alive then
-            local freeMouse=state.MenuVisible or combat.IsFocused()
+            local freeMouse=state.MenuVisible or focused
             UIS.MouseBehavior=freeMouse and Enum.MouseBehavior.Default or Enum.MouseBehavior.LockCenter
             UIS.MouseIconEnabled=freeMouse
         end
-        if state.Alive and (state.Enabled or state.Travelling) then
-            local _,h,root=character()
-            if h and root then
-                local direction=moveGoal and Vector3.new(moveGoal.X-root.Position.X,0,moveGoal.Z-root.Position.Z)
-                if direction and direction.Magnitude>1 and (state.Travelling or not combat.IsFocused()) then h:Move(direction.Unit,false)
-                else h:Move(Vector3.zero,false) end
-            end
-        end
-        if state.Alive and state.Enabled and valid(state.Target) and not combat.IsFocused() then
-            local _,h,root=character()
-            local targetRoot=mobRoot(state.Target)
-            if h and root and targetRoot and (targetRoot.Position-root.Position).Magnitude<=7 then
-                local delta=targetRoot.Position-root.Position
-                local direction=Vector3.new(delta.X,0,delta.Z)
-                if direction.Magnitude>0.1 then root.CFrame=CFrame.lookAt(root.Position,root.Position+direction) end
-            end
+        local ok,problem=pcall(motionController.Step,dt,focused)
+        if not ok then
+            state.LastMotionError=tostring(problem)
+            pcall(motionController.Release)
+            local _,h=character()
+            if h then h:Move(Vector3.zero,false) end
         end
     end)
+    questBrowser.Mount(panel,{Text=text,Card=card,Field=field,Make=make,Button=button})
     view.Fit()
     refreshChoices()
     updateStatus()
@@ -3320,6 +4396,115 @@ local function oreApproaches(c, target, start)
     end
     table.sort(positions, function(a, b) return (a.Position - start).Magnitude < (b.Position - start).Magnitude end)
     return positions
+end
+
+-- The waypoint decision is pure. canWalk is an injected corridor-safety check.
+-- Never bypass an unperformed Jump, and only consume a passed waypoint when the
+-- player remains close to its original segment and can still walk back safely.
+local function chooseRouteWaypoint(points, index, position, lastJumpIndex, canWalk, reanchor)
+    local count = #points
+    index = math.clamp(index or 2, 1, count + 1)
+    for _ = 1, 12 do
+        local wp = points[index]
+        if not wp then break end
+        local delta = wp.Position - position
+        local flat = Vector3.new(delta.X, 0, delta.Z)
+        local jump = wp.Action == Enum.PathWaypointAction.Jump
+        local radius = index == count and 1 or 2.6
+        local reached = flat.Magnitude <= radius and math.abs(delta.Y) < 7
+            and (not jump or lastJumpIndex == index)
+        local passed = false
+        if not reached and wp.Action == Enum.PathWaypointAction.Walk and index < count and flat.Magnitude <= 36 then
+            local previous = points[index - 1]
+            if previous then
+                local segment = wp.Position - previous.Position
+                segment = Vector3.new(segment.X, 0, segment.Z)
+                local fromPrevious = position - previous.Position
+                fromPrevious = Vector3.new(fromPrevious.X, 0, fromPrevious.Z)
+                local lengthSquared = segment:Dot(segment)
+                if lengthSquared > 0.01 then
+                    local progress = fromPrevious:Dot(segment) / lengthSquared
+                    local lateral = (fromPrevious - segment * progress).Magnitude
+                    passed = progress >= 1 and lateral <= 2.8 and math.abs(delta.Y) < 7
+                        and canWalk(wp.Position, 36)
+                end
+            end
+        end
+        if not reached and not passed then break end
+        index += 1
+    end
+    local wp = points[index]
+    if not wp or wp.Action ~= Enum.PathWaypointAction.Walk then return index end
+    if reanchor then
+        -- A fresh async result may start behind a bend that the old route has
+        -- already carried us around. Rejoin a nearby later walking segment;
+        -- no jump/custom boundary may be crossed even during this handoff.
+        local nearbyIndex = index
+        for candidateIndex = index + 1, math.min(count, index + 15) do
+            local candidate = points[candidateIndex]
+            if candidate.Action ~= Enum.PathWaypointAction.Walk then break end
+            local delta = candidate.Position - position
+            if Vector3.new(delta.X, 0, delta.Z).Magnitude <= 14 and math.abs(delta.Y) < 7 then nearbyIndex = candidateIndex end
+        end
+        if nearbyIndex > index and canWalk(points[nearbyIndex].Position, 14) then index = nearbyIndex end
+    end
+    -- Look only a few ordinary waypoints ahead. The full corridor, including
+    -- ground support, must be clear before cutting a gentle corner.
+    local candidate = index
+    for nextIndex = index + 1, math.min(count, index + 3) do
+        local nextWaypoint = points[nextIndex]
+        if nextWaypoint.Action ~= Enum.PathWaypointAction.Walk then break end
+        local delta = nextWaypoint.Position - position
+        if Vector3.new(delta.X, 0, delta.Z).Magnitude > 14 or math.abs(delta.Y) >= 7 then break end
+        candidate = nextIndex
+    end
+    if candidate > index and canWalk(points[candidate].Position, 14) then return candidate end
+    return index
+end
+
+-- This only validates a short walking shortcut; rejected segments keep the
+-- original native path. Rays check body width/height and ground on both edges.
+local function clearWalkSegment(c, target, from, destination, maximumDistance)
+    local delta = destination - from
+    local flat = Vector3.new(delta.X, 0, delta.Z)
+    if flat.Magnitude < 0.05 then return false end
+    if flat.Magnitude > (maximumDistance or 14) or math.abs(delta.Y) >= 7 then return false end
+    local params = RaycastParams.new()
+    params.FilterType, params.RespectCanCollide, params.IgnoreWater = Enum.RaycastFilterType.Exclude, true, true
+    local excluded = {c}
+    if target then table.insert(excluded, target) end
+    local mobs = workspace:FindFirstChild("Mobs")
+    if mobs then table.insert(excluded, mobs) end
+    params.FilterDescendantsInstances = excluded
+    local side = Vector3.new(-flat.Z, 0, flat.X).Unit * 1.25
+    for _, height in {-1.3, 0.5, 1.5} do
+        for _, offset in {Vector3.zero, side, -side} do
+            if workspace:Raycast(from + offset + Vector3.new(0, height, 0), flat, params) then return false end
+        end
+    end
+    local humanoid = c and c:FindFirstChildOfClass("Humanoid")
+    local rootPart = c and c:FindFirstChild("HumanoidRootPart")
+    local rootHeight = humanoid and rootPart and humanoid.HipHeight + rootPart.Size.Y / 2 or 3
+    local expectedFloor, previousFloor = from.Y - rootHeight, nil
+    local samples = math.max(1, math.ceil(flat.Magnitude / 2.5))
+    for sample = 0, samples do
+        local point = from + flat * (sample / samples)
+        local floorY
+        for _, offset in {Vector3.zero, side, -side} do
+            local hit = workspace:Raycast(point + offset + Vector3.new(0, 2, 0), Vector3.new(0, -12, 0), params)
+            if not hit or hit.Normal.Y < 0.65 or math.abs(hit.Position.Y - expectedFloor) > 5 then return false end
+            if floorY and math.abs(hit.Position.Y - floorY) > 1.5 then return false end
+            floorY = floorY or hit.Position.Y
+        end
+        if previousFloor and math.abs(floorY - previousFloor) > 2.3 then return false end
+        previousFloor = floorY
+    end
+    -- A waypoint can lie on a different storey directly above the visible floor.
+    -- Its own downward probe must agree with the floor reached along the segment.
+    local destinationGround = workspace:Raycast(destination + Vector3.new(0, 2, 0), Vector3.new(0, -12, 0), params)
+    if not destinationGround or destinationGround.Normal.Y < 0.65
+        or math.abs(destinationGround.Position.Y - previousFloor) > 1.5 then return false end
+    return true
 end
 
 local function planRoute(c, root, target)
@@ -3434,8 +4619,22 @@ local function planRoute(c, root, target)
             planning = false
             state.PathStatus = directRoute and "clear passage" or (ok and path.Status.Name or "error")
             if directRoute or (ok and path.Status == Enum.PathStatus.Success) then
-                route, routeIndex, routeGoal, routeTarget, routeAt = directRoute or path:GetWaypoints(), 2, destination, target, os.clock()
+                local nextRoute = directRoute or path:GetWaypoints()
+                local currentRoot = c:FindFirstChild("HumanoidRootPart")
+                if not currentRoot or (currentRoot.Position - start).Magnitude > 72 then
+                    -- Keep the previous path while replacing a result computed too far behind us.
+                    lastPlan = -100
+                    state.PathStatus = "Replan"
+                    path:Destroy()
+                    return
+                end
+                local nextIndex = chooseRouteWaypoint(nextRoute, 2, currentRoot.Position, nil, function(point, limit)
+                    return clearWalkSegment(c, target, currentRoot.Position, point, limit)
+                end, true)
+                route, routeIndex, routeGoal, routeTarget, routeAt = nextRoute, nextIndex, destination, target, os.clock()
                 routePartial = partial
+                moveGoal = nextRoute[nextIndex] and nextRoute[nextIndex].Position or nil
+                lastMove = -100
                 state.NavStage = cave and (partial and "cave entrance" or "ore approach") or "target"
                 state.RouteDestination = destination
                 state.LastError = nil
@@ -3532,13 +4731,9 @@ local function navigate(c, h, root, target, distance, targetRoot)
             end
             if clear then
                 if route or planning then invalidateRoute() end
-                h.AutoRotate = true
-                if os.clock()-lastMove>0.18 then
-                    lastMove = os.clock()
-                    moveGoal = targetRoot.Position-flat.Unit*4.2
-                    h:MoveTo(moveGoal)
-                end
-                pcall(function()setSprint(flat.Magnitude>14)end)
+                moveGoal = targetRoot.Position-flat.Unit*4.2
+                local sprinting = c:GetAttribute("Sprinting") == true
+                pcall(function()setSprint(flat.Magnitude > 18 or (sprinting and flat.Magnitude >= 10))end)
                 state.PathStatus,state.Status = "Direct","กำลังเข้าหามอน"
                 lastPosition,lastProgress = root.Position,os.clock()
                 return
@@ -3546,12 +4741,10 @@ local function navigate(c, h, root, target, distance, targetRoot)
         end
     end
     state.Status = planning and "กำลังคำนวณเส้นทาง" or "กำลังวิ่งหาเป้าหมาย"
-    h.AutoRotate = true
     if avoidanceGoal then
         local remaining = Vector3.new(avoidanceGoal.X - root.Position.X, 0, avoidanceGoal.Z - root.Position.Z)
         if remaining.Magnitude > 2 and os.clock() < avoidanceUntil then
             moveGoal = avoidanceGoal
-            h:MoveTo(moveGoal)
             pcall(function() setSprint(true) end)
             state.Status = "กำลังวิ่งอ้อมสิ่งกีดขวาง"
             lastProgress, lastPosition = os.clock(), root.Position
@@ -3572,7 +4765,7 @@ local function navigate(c, h, root, target, distance, targetRoot)
         state.StepStage = "plan route"
         planRoute(c, root, target)
     elseif not routePartial and os.clock() - routeAt > 6 and routeGoal and (targetRoot.Position - routeGoal).Magnitude > 18 then
-        invalidateRoute()
+        -- Continue the current path until ComputeAsync has a fresh replacement.
         planRoute(c, root, target)
     end
     if route and routeIndex <= #route then
@@ -3582,34 +4775,39 @@ local function navigate(c, h, root, target, distance, targetRoot)
         if wp.Action == Enum.PathWaypointAction.Jump and jumpedIndex ~= routeIndex and flat.Magnitude < 7 then
             if requestJump(h) then jumpedIndex = routeIndex end
         end
-        if flat.Magnitude < 1.8 and math.abs(wp.Position.Y - root.Position.Y) < 7
-            and (wp.Action ~= Enum.PathWaypointAction.Jump or jumpedIndex == routeIndex) then
-            routeIndex += 1
-            wp = route[routeIndex]
-        end
-        if wp and os.clock() - lastMove > 0.2 then
-            lastMove = os.clock()
+        routeIndex = chooseRouteWaypoint(route, routeIndex, root.Position, jumpedIndex, function(point, limit)
+            return clearWalkSegment(c, target, root.Position, point, limit)
+        end)
+        wp = route[routeIndex]
+        if wp then
             local desired = Vector3.new(wp.Position.X - root.Position.X, 0, wp.Position.Z - root.Position.Z)
-            local detour = os.clock() - lastProgress > 1.5 and wp.Action ~= Enum.PathWaypointAction.Jump
-                and wallDetour(c, root, desired, wp.Position)
-            if detour then
-                avoidanceGoal, avoidanceUntil, moveGoal = detour, os.clock() + 3, detour
-                state.Detours = (state.Detours or 0) + 1
-                state.Status = "กำลังวิ่งอ้อมสิ่งกีดขวาง"
-                h:MoveTo(detour)
-                pcall(function() setSprint(true) end)
-                return
+            if os.clock() - lastMove > 0.2 then
+                lastMove = os.clock()
+                local detour = os.clock() - lastProgress > 1.5 and wp.Action ~= Enum.PathWaypointAction.Jump
+                    and wallDetour(c, root, desired, wp.Position)
+                if detour then
+                    avoidanceGoal, avoidanceUntil, moveGoal = detour, os.clock() + 3, detour
+                    state.Detours = (state.Detours or 0) + 1
+                    state.Status = "กำลังวิ่งอ้อมสิ่งกีดขวาง"
+                    pcall(function() setSprint(true) end)
+                    return
+                end
             end
             if wp.Action == Enum.PathWaypointAction.Jump and jumpedIndex ~= routeIndex and desired.Magnitude < 7 then
                 if requestJump(h) then jumpedIndex = routeIndex end
             end
+            -- The render steering loop owns Humanoid movement. Publish every step,
+            -- even when the next waypoint changed during the old MoveTo throttle.
             moveGoal = wp.Position
             state.NavGoal = {X = wp.Position.X, Y = wp.Position.Y, Z = wp.Position.Z}
-            h:MoveTo(wp.Position)
+        else
+            moveGoal = nil
+            -- Finish one partial leg and request the next without the old 1.5 s idle.
+            lastPlan = -100
+            planRoute(c, root, target)
         end
     elseif distance < 16 then
         moveGoal = targetRoot.Position
-        h:MoveTo(targetRoot.Position)
     end
     pcall(function() setSprint(moveGoal ~= nil) end)
 end
@@ -3799,7 +4997,6 @@ local function stepMining(c, h, root)
     end
     local target = state.Target
     if not valid(target) then
-        stopMovement()
         local previousKind = target and target:GetAttribute("OreType")
         if target and engaged[target] and target:GetAttribute("MinedOut") then
             state.NodesMined += 1
@@ -3814,13 +5011,22 @@ local function stepMining(c, h, root)
         end
         if target then engaged[target] = nil end
         state.Target = nil
-        if os.clock() - lastPick < 0.6 then return end
+        if os.clock() - lastPick < 0.18 then return end
         lastPick = os.clock()
         target = chooseTarget(root)
         if state.Selected == "CaveSteelFirst" and previousKind == "IronOre" and target
             and target:GetAttribute("OreType") == "SteelOre" then state.PrioritySwitches += 1 end
         state.Target = target
         invalidateRoute()
+        if target then
+            local nextRoot = mobRoot(target)
+            local delta = nextRoot.Position - root.Position
+            local flat = Vector3.new(delta.X, 0, delta.Z)
+            if flat.Magnitude > 7.1 and flat.Magnitude < 20 and math.abs(delta.Y) < 7 then
+                local approach = Vector3.new(nextRoot.Position.X, root.Position.Y, nextRoot.Position.Z) - flat.Unit * 6
+                if clearWalkSegment(c, target, root.Position, approach, 14) then moveGoal = approach end
+            end
+        end
         lastPosition, lastProgress = root.Position, os.clock()
     end
     if not target then
@@ -3835,6 +5041,19 @@ local function stepMining(c, h, root)
     if mineAimTarget ~= target then mineAimTarget, mineAimSince = target, os.clock() end
     state.Distance = delta.Magnitude
     if flat.Magnitude <= 7.1 and math.abs(delta.Y) <= 7 then
+        -- Finish a short, checked reposition before exact aiming again.
+        -- Otherwise the old stop/lookAt every tick fights the walking turn.
+        if mineRepositionTarget == target and mineRepositionGoal and os.clock() < (mineRepositionUntil or 0) then
+            local remaining = mineRepositionGoal - root.Position
+            if Vector3.new(remaining.X,0,remaining.Z).Magnitude > 1.25 then
+                moveGoal = mineRepositionGoal
+                state.Status = "กำลังจัดตำแหน่งขุดแร่"
+                pcall(function()setSprint(false)end)
+                lastProgress,lastPosition = os.clock(),root.Position
+                return
+            end
+        end
+        mineRepositionGoal,mineRepositionTarget,mineRepositionUntil = nil,nil,nil
         stopMovement()
         route = nil
         h.AutoRotate = false
@@ -3874,9 +5093,12 @@ local function stepMining(c, h, root)
             local away = other and targetRoot.Position - other.Position or -delta
             away = Vector3.new(away.X, 0, away.Z)
             if away.Magnitude > 0.1 then
-                moveGoal = targetRoot.Position + away.Unit * 4.5
-                h.AutoRotate = true
-                state.Status = "กำลังจัดตำแหน่งขุดแร่"
+                local position = targetRoot.Position + away.Unit * 4.5
+                if clearWalkSegment(c,nil,root.Position,position,14) then
+                    mineRepositionGoal,mineRepositionTarget,mineRepositionUntil = position,target,os.clock()+2
+                    moveGoal = position
+                    state.Status = "กำลังจัดตำแหน่งขุดแร่"
+                end
             end
         end
         lastProgress, lastPosition = os.clock(), root.Position
@@ -4136,6 +5358,7 @@ state.WebhookThread = task.spawn(function()
     end
 end)
 connect(player.CharacterAdded, function()
+    motionController.Release()
     if state.Travelling then state.CancelServiceTravel("เกิดตัวละครใหม่ • ยกเลิกรายการที่รอแล้ว") end
     cancelAction()
     if not state.Selling then state.SellConfirmation = nil end
