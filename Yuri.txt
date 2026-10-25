@@ -1,4 +1,4 @@
--- Evernight v2.21: self-contained installer and runner.
+-- Evernight v2.24: self-contained installer and runner.
 local source=[====[
 -- Persistent preferences and teleport continuation, confined to Project Eternity.
 local continuity = (function()
@@ -52,6 +52,27 @@ local function createPersistentSettings(options)
         for index = 1, math.min(#keys, limit) do result[keys[index]] = value[keys[index]] end
         return result
     end
+    local function floor1QuestOrder(value)
+        local defaults = {"m_forge", "m_gallows", "nepenthesHuntQuest"}
+        local allowed = {m_forge = true, m_gallows = true, nepenthesHuntQuest = true}
+        local result, seen = {}, {}
+        if type(value) == "table" then
+            local indexes = {}
+            for index, id in pairs(value) do
+                if finite(index) and index >= 1 and index == math.floor(index)
+                    and type(id) == "string" and allowed[id] then indexes[#indexes + 1] = index end
+            end
+            table.sort(indexes)
+            for _, index in ipairs(indexes) do
+                local id = value[index]
+                if not seen[id] then result[#result + 1], seen[id] = id, true end
+            end
+        end
+        for _, id in ipairs(defaults) do
+            if not seen[id] then result[#result + 1] = id end
+        end
+        return result
+    end
     local function sanitize(value)
         if type(value) ~= "table" then return nil end
         if value.PersistenceEnabled == false then return {PersistenceEnabled = false} end
@@ -59,9 +80,11 @@ local function createPersistentSettings(options)
         for _, key in ipairs(booleanKeys) do if type(value[key]) == "boolean" then result[key] = value[key] end end
         if modes[value.Mode] then result.Mode = value.Mode end
         if oreKinds[value.SelectedOre] then result.SelectedOre = value.SelectedOre end
-        if value.SelectedStoneQuest=="All" or value.SelectedStoneQuest=="m_forge" or value.SelectedStoneQuest=="m_gallows" or value.SelectedStoneQuest=="nepenthesHuntQuest" then
+        if value.SelectedStoneQuest=="All" or value.SelectedStoneQuest=="m_forge" or value.SelectedStoneQuest=="m_gallows" or value.SelectedStoneQuest=="nepenthesHuntQuest"
+            or value.SelectedStoneQuest=="floor2MinibossApeQuest" or value.SelectedStoneQuest=="floor2EliteTaurusQuest" then
             result.SelectedStoneQuest=value.SelectedStoneQuest
         end
+        result.Floor1QuestOrder = floor1QuestOrder(value.Floor1QuestOrder)
         for _, key in ipairs({"SelectedMob", "SelectedWeapon", "CraftMaterial"}) do
             local text = safeText(value[key], 120, false)
             if text then result[key] = text end
@@ -176,7 +199,7 @@ local function createPersistentSettings(options)
         local snapshot = {}
         for _, key in ipairs(booleanKeys) do snapshot[key] = state[key] end
         for _, key in ipairs({"Mode", "SelectedMob", "SelectedOre", "SelectedWeapon", "CraftMaterial",
-            "CraftQuantity", "PotionThreshold", "UiScale", "UiSearch", "SkillSelection", "SellLocks", "LastFloor", "SelectedStoneQuest"}) do snapshot[key] = state[key] end
+            "CraftQuantity", "PotionThreshold", "UiScale", "UiSearch", "SkillSelection", "SellLocks", "LastFloor", "SelectedStoneQuest", "Floor1QuestOrder"}) do snapshot[key] = state[key] end
         -- A cross-floor pause must not overwrite the actual desired farm switch.
         if type(state.FloorTravelResumeEnabled) == "boolean" then snapshot.Enabled = state.FloorTravelResumeEnabled end
         return sanitize(snapshot)
@@ -928,7 +951,7 @@ if env.EternityAutoFarm and env.EternityAutoFarm.Alive then
         LastSale = old.LastSale, AutoRespawn = old.AutoRespawn, RespawnDeaths = old.RespawnDeaths,
         RespawnRequests = old.RespawnRequests, Respawns = old.Respawns, UiScale = old.UiScale, UiSearch = old.UiSearch,
         AntiAfk = old.AntiAfk, AntiAfkPulses = old.AntiAfkPulses,
-        QuestRuns = old.QuestRuns, QuestFailures = old.QuestFailures, QuestLastCompleted = old.QuestLastCompleted, SelectedStoneQuest = old.SelectedStoneQuest, QuestStoneEarned = old.QuestStoneEarned,
+        QuestRuns = old.QuestRuns, QuestFailures = old.QuestFailures, QuestLastCompleted = old.QuestLastCompleted, SelectedStoneQuest = old.SelectedStoneQuest, QuestStoneEarned = old.QuestStoneEarned, QuestAutoPage = old.QuestAutoPage, Floor1QuestOrder = old.Floor1QuestOrder,
         SkillsEnabled = old.SkillsEnabled, SkillSelection = old.SkillSelection, SkillsUsed = old.SkillsUsed,
         AutoPotion = old.AutoPotion, PotionThreshold = old.PotionThreshold, PotionUsed = old.PotionUsed,
         QuestFilter = old.QuestFilter, QuestSearch = old.QuestSearch, SelectedQuest = old.SelectedQuest}
@@ -940,7 +963,7 @@ end
 continuity.Apply(previousSettings)
 local inheritedRestores = {}
 for _, old in filtergc("table", {Keys = {"Alive", "Enabled", "Selected", "SetEnabled", "Destroy"}}, false) do
-    if old.Version == "2.21" or old.Version == "2.20" or old.Version == "2.19" or old.Version == "2.18" or old.Version == "2.17" or old.Version == "2.16" or old.Version == "1.0" or old.Version == "1.1" or old.Version == "1.2" or old.Version == "1.3" or old.Version == "1.4" or old.Version == "1.5" or old.Version == "1.6" or old.Version == "1.7" or old.Version == "1.8" or old.Version == "1.9" or old.Version == "2.0" or old.Version == "2.1" or old.Version == "2.2" or old.Version == "2.3" or old.Version == "2.4" or old.Version == "2.5" or old.Version == "2.6" or old.Version == "2.7" or old.Version == "2.8" or old.Version == "2.9" or old.Version == "2.10" or old.Version == "2.11" or old.Version == "2.12" or old.Version == "2.13" or old.Version == "2.14" or old.Version == "2.15" then
+    if old.Version == "2.24" or old.Version == "2.23" or old.Version == "2.22" or old.Version == "2.21" or old.Version == "2.20" or old.Version == "2.19" or old.Version == "2.18" or old.Version == "2.17" or old.Version == "2.16" or old.Version == "1.0" or old.Version == "1.1" or old.Version == "1.2" or old.Version == "1.3" or old.Version == "1.4" or old.Version == "1.5" or old.Version == "1.6" or old.Version == "1.7" or old.Version == "1.8" or old.Version == "1.9" or old.Version == "2.0" or old.Version == "2.1" or old.Version == "2.2" or old.Version == "2.3" or old.Version == "2.4" or old.Version == "2.5" or old.Version == "2.6" or old.Version == "2.7" or old.Version == "2.8" or old.Version == "2.9" or old.Version == "2.10" or old.Version == "2.11" or old.Version == "2.12" or old.Version == "2.13" or old.Version == "2.14" or old.Version == "2.15" then
         local cleanup = task.spawn(function() pcall(old.Destroy) end)
         if old.RestoringEquipment then table.insert(inheritedRestores, old) end
         old.Enabled, old.Alive = false, false
@@ -961,9 +984,33 @@ local RunService = game:GetService("RunService")
 local Pathfinding = game:GetService("PathfindingService")
 local player = Players.LocalPlayer
 local currentFloor = tonumber(require(game:GetService("ReplicatedStorage").Shared.PlaceConfig).storyFloor) or 1
+local function normalizeFloor1QuestOrder(value)
+    local defaults={"m_forge","m_gallows","nepenthesHuntQuest"}
+    local allowed={m_forge=true,m_gallows=true,nepenthesHuntQuest=true}
+    local order,seen={},{}
+    local indices={}
+    if type(value)=="table" then
+        for index in pairs(value) do
+            if type(index)=="number" and index>=1 and index%1==0 then indices[#indices+1]=index end
+        end
+        table.sort(indices)
+    end
+    for _,index in ipairs(indices) do
+        local id=value[index]
+        if type(id)=="string" and allowed[id] and not seen[id] then order[#order+1]=id seen[id]=true end
+    end
+    for _,id in ipairs(defaults) do
+        if not seen[id] then order[#order+1]=id seen[id]=true end
+    end
+    return order
+end
+
 local initialMode = previousSettings.Mode == "Quest" and "Quest" or previousSettings.Mode == "Sell" and "Sell" or previousSettings.Mode == "Craft" and "Craft" or previousSettings.Mode == "Mining" and "Mining" or "Combat"
 local initialMob = previousSettings.SelectedMob or "Frenzy Boar"
-local initialStoneQuest = (previousSettings.SelectedStoneQuest == "m_forge" or previousSettings.SelectedStoneQuest == "m_gallows" or previousSettings.SelectedStoneQuest == "nepenthesHuntQuest") and previousSettings.SelectedStoneQuest or "All"
+local initialStoneQuest = previousSettings.SelectedStoneQuest
+if currentFloor == 2 then
+    if initialStoneQuest ~= "floor2MinibossApeQuest" and initialStoneQuest ~= "floor2EliteTaurusQuest" then initialStoneQuest = "All" end
+elseif initialStoneQuest ~= "m_forge" and initialStoneQuest ~= "m_gallows" and initialStoneQuest ~= "nepenthesHuntQuest" then initialStoneQuest = "All" end
 local initialOre = previousSettings.SelectedOre
 if currentFloor == 2 then
     if initialOre ~= "CrystalliteOre" and initialOre ~= "CrystalliteArea1" and initialOre ~= "CrystalliteArea2" then initialOre = "CrystalliteOre" end
@@ -978,7 +1025,7 @@ local state = {
     AutoTownWarp = previousSettings.AutoTownWarp ~= false, Warps = 0,
     Status = "พร้อมใช้งาน", Target = nil, Distance = 0,
     Attacks = 0, Kills = 0, DamageObserved = 0, PathStatus = "idle", LastError = nil,
-    MenuVisible = true, Version = "2.21", Connections = {},
+    MenuVisible = true, Version = "2.24", Connections = {},
     PersistenceEnabled=previousSettings.PersistenceEnabled~=false, AutoJoinWorld=previousSettings.AutoJoinWorld~=false, AutoResumeFarm=previousSettings.AutoResumeFarm~=false,
     LastFloor=currentFloor, WorldOpen=false, FloorTravelling=false, PersistenceStatus=continuity.Store.Status,
     SettingsOpen = false, MaterialPickerOpen = false, UiScale = previousSettings.UiScale or 1,
@@ -986,7 +1033,8 @@ local state = {
     Travelling = false, TravelStatus = "", TravelDistance = 0,
     AutoRespawn = previousSettings.AutoRespawn ~= false, Respawning = false,
     AntiAfk = previousSettings.AntiAfk ~= false, AntiAfkPulses = previousSettings.AntiAfkPulses or 0,
-    SelectedStoneQuest = initialStoneQuest, QuestStoneEarned = math.max(0,math.floor(tonumber(previousSettings.QuestStoneEarned) or 0)),
+    Floor1QuestOrder = normalizeFloor1QuestOrder(previousSettings.Floor1QuestOrder), Floor1QuestOrderOpen = false, SelectedStoneQuest = initialStoneQuest, QuestStoneEarned = math.max(0,math.floor(tonumber(previousSettings.QuestStoneEarned) or 0)),
+    QuestAutoPage = currentFloor ~= 2 or previousSettings.QuestAutoPage == true,
     QuestRuns = previousSettings.QuestRuns or 0, QuestFailures = previousSettings.QuestFailures or 0,
     QuestLastCompleted = previousSettings.QuestLastCompleted, QuestPhase = "Available", QuestRemaining = 0,
     SkillsEnabled = previousSettings.SkillsEnabled ~= false, SkillSelection = previousSettings.SkillSelection or {},
@@ -1076,7 +1124,17 @@ local function character()
     if c and h and r and h.Health > 0 then return c, h, r end
 end
 
-local stoneQuestUiChoices = {
+local stoneQuestUiChoices = currentFloor == 2 and {
+    All = {Title="วนเควสหินชั้น 2", Label="วนเควสที่พร้อม · ชั้น 2", Rank=0,
+        Duration="ตรวจคูลดาวน์ตาม NPC",
+        Reward="สลับ The Ape King · The Elite Guard", Items="Upgrade Stone · จำนวนตาม NPC"},
+    floor2MinibossApeQuest = {Title="The Ape King", Label="The Ape King · Snow Ape King", Rank=1,
+        Duration="Snow Ape King 1 ตัว · คูลดาวน์ตาม NPC",
+        Reward="รางวัลต่อรอบ 1,000 XP · 650 Col", Items="Upgrade Stone · จำนวนตาม NPC"},
+    floor2EliteTaurusQuest = {Title="The Elite Guard", Label="The Elite Guard · Elite Taurus", Rank=2,
+        Duration="Elite Taurus Sentinel 1 ตัว · คูลดาวน์ตาม NPC",
+        Reward="รางวัลต่อรอบ 1,150 XP · 750 Col", Items="Upgrade Stone · จำนวนตาม NPC"},
+} or {
     All = {Title="วนเควสที่พร้อม", Label="วนเควสที่พร้อม · รวม NPC", Rank=0,
         Duration="Forge รอ 50 นาที · Gallows รอ 60 นาที",
         Reward="สลับ Forge · Gallows · Forest Clearing",
@@ -1171,11 +1229,13 @@ local function valid(m)
         and mobRoot(m) ~= nil
 end
 
--- The native combat hit box overlaps the plant's collider; its centre is unreachable.
+-- Native hit boxes overlap large quest colliders; their centres can be unreachable.
 local function questCombatDelta(root,target,targetRoot)
     local delta=targetRoot.Position-root.Position
-    if state.Mode=="Quest" and state.QuestId=="nepenthesHuntQuest"
-        and target and target:GetAttribute("MobKind")=="Little Nepenthes"
+    local kinds={nepenthesHuntQuest="Little Nepenthes",floor2MinibossApeQuest="Snow Ape King",
+        floor2EliteTaurusQuest="Elite Taurus Sentinel"}
+    local kind=kinds[state.QuestId]
+    if state.Mode=="Quest" and kind and target and target:GetAttribute("MobKind")==kind
         and targetRoot:IsA("BasePart") then
         return targetRoot:GetClosestPointOnSurface(root.Position)-root.Position,true
     end
@@ -2542,6 +2602,25 @@ local function resolveForgeQuest()
     local config = require(game:GetService("ReplicatedStorage").Shared.StoryConfig)
     local remote = game:GetService("ReplicatedStorage").Remotes:FindFirstChild("Story")
     local order = {"m_forge", "m_gallows"}
+    local function normalizedOrder(value)
+        if type(normalizeFloor1QuestOrder)=="function" then return normalizeFloor1QuestOrder(value) end
+        local defaults={"m_forge","m_gallows","nepenthesHuntQuest"}
+        local allowed={m_forge=true,m_gallows=true,nepenthesHuntQuest=true}
+        local result,seen={},{}
+        local indices={}
+        if type(value)=="table" then
+            for index in pairs(value) do
+                if type(index)=="number" and index>=1 and index%1==0 then indices[#indices+1]=index end
+            end
+            table.sort(indices)
+        end
+        for _,index in ipairs(indices) do
+            local id=value[index]
+            if type(id)=="string" and allowed[id] and not seen[id] then result[#result+1]=id seen[id]=true end
+        end
+        for _,id in ipairs(defaults) do if not seen[id] then result[#result+1]=id seen[id]=true end end
+        return result
+    end
     local supported = {
         m_forge = {Title = "Hold the Forge", Npc = "Agil", Marker = "M_AgilForge", Cooldown = 3000,
             Scenes = {m_forge_talk = true, m_forge_done = true, m_forge_fail = true}, Fail = "m_forge_fail"},
@@ -2684,6 +2763,10 @@ local function resolveForgeQuest()
         choiceKey, choiceAt, choiceAttempts = nil, -100, 0
         if not keepWeaponAttempt then weaponPending, weaponTried, stopRequest = nil, {}, nil end
     end
+    function api.Order()
+        state.Floor1QuestOrder=normalizedOrder(state.Floor1QuestOrder)
+        return state.Floor1QuestOrder
+    end
     function api.Snapshot()
         local data = gameState.get()
         local story = data and data.story
@@ -2713,11 +2796,13 @@ local function resolveForgeQuest()
             result = baseSnapshot(story, selected, false)
         else
             local cooldown
-            for _, id in order do
-                local candidate = baseSnapshot(story, id, false)
-                if candidate.Phase == "Available" then result = candidate break end
-                if candidate.Phase == "Cooldown" and (not cooldown or candidate.Remaining < cooldown.Remaining) then cooldown = candidate end
-                if not result or result.Phase == "Unavailable" and candidate.Phase ~= "Unavailable" then result = candidate end
+            for _, id in api.Order() do
+                if supported[id] then
+                    local candidate = baseSnapshot(story, id, false)
+                    if candidate.Phase == "Available" then result = candidate break end
+                    if candidate.Phase == "Cooldown" and (not cooldown or candidate.Remaining < cooldown.Remaining) then cooldown = candidate end
+                    if not result or result.Phase == "Unavailable" and candidate.Phase ~= "Unavailable" then result = candidate end
+                end
             end
             if result.Phase ~= "Available" and cooldown then result = cooldown end
         end
@@ -2981,6 +3066,529 @@ local function resolveForgeQuest()
     return api
 end
 
+-- Floor 2 native NPC stone quests. Rewards and repeatability are confirmed by the server.
+local function resolveFloor2StoneQuest(storyApi)
+    local order={"floor2MinibossApeQuest","floor2EliteTaurusQuest"}
+    local definitions={
+        floor2MinibossApeQuest={Title="The Ape King",Mob="Snow Ape King",Npc="Floor2QuestNPC4"},
+        floor2EliteTaurusQuest={Title="The Elite Guard",Mob="Elite Taurus Sentinel",Npc="Floor2QuestNPC6"},
+    }
+    local store=require(player.PlayerScripts.Client.State)
+    local storage=game:GetService("ReplicatedStorage")
+    local remotes=storage.Remotes
+    local waypoint
+    pcall(function()waypoint=require(player.PlayerScripts.Client.Waypoint)end)
+    local metadataRaw,metadata=nil,{}
+    local talkRemote,acceptRemote=remotes:FindFirstChild("QuestTalk"),remotes:FindFirstChild("QuestAccept")
+    local api={Story=storyApi,Definitions=definitions}
+    local records,observed,baselines={},{},{}
+    local latest,cursor,pendingClaim=nil,1,nil
+    local huntGoal,huntZone
+    state.QuestCompletedById=type(state.QuestCompletedById)=="table" and state.QuestCompletedById or {}
+    state.Floor2QuestStoneById=type(state.Floor2QuestStoneById)=="table" and state.Floor2QuestStoneById or {}
+    state.QuestRuns=tonumber(state.QuestRuns) or 0
+    state.QuestStoneEarned=tonumber(state.QuestStoneEarned) or 0
+    for _,id in order do records[id]={Attempts=0,LastRequest=-100,CooldownUntil=0} end
+
+    local function dataNow() return store.get() or {} end
+    local function activeQuest(data)
+        local quests=type(data.quests)=="table" and data.quests or {}
+        return type(quests.active)=="table" and quests.active or nil,quests
+    end
+    local function completedCount(quests,id)
+        return type(quests.completed)=="table" and tonumber(quests.completed[id]) or 0
+    end
+    local function stoneCount(data)
+        if type(data.inventory)~="table" then return nil end
+        local total=0
+        for _,item in pairs(data.inventory) do
+            if type(item)=="table" and item.kind=="UpgradeStone" then
+                local amount=tonumber(item.amount) or 1
+                if amount==amount and amount~=math.huge and amount~=-math.huge then total+=math.max(0,amount) end
+            end
+        end
+        return total
+    end
+    local function advance(id)
+        for index,key in order do if key==id then cursor=index%#order+1 break end end
+    end
+    local function markerPart(instance)
+        if not instance then return nil end
+        if type(instance.IsA)=="function" and instance:IsA("Attachment") then return markerPart(instance.Parent) end
+        local ok,position=pcall(function()return instance.Position end)
+        if ok and typeof(position)=="Vector3" then return instance end
+        if instance.Parent then
+            ok,position=pcall(function()return instance.Parent.Position end)
+            if ok and typeof(position)=="Vector3" then return instance.Parent end
+        end
+        local root=instance:FindFirstChild("HumanoidRootPart")
+        return root
+    end
+    local function npcMarker(id)
+        for _,prompt in workspace:QueryDescendants("ProximityPrompt[$QuestId]") do
+            if prompt:GetAttribute("QuestId")==id then return markerPart(prompt.Parent) end
+        end
+    end
+    local function townMarker()
+        local anchors=workspace:FindFirstChild("MapAnchors")
+        return markerPart(anchors and anchors:FindFirstChild("Eirholm"))
+    end
+    local function npcTarget(mob,id)
+        local mobs=workspace:FindFirstChild("Mobs")
+        return definitions[id]~=nil and mob~=nil and mob.Parent==mobs
+            and mob:GetAttribute("MobKind")==definitions[id].Mob
+            and mob:GetAttribute("StoryOwner")==nil and not mob:GetAttribute("StoryNpc")
+            and not mob:GetAttribute("StoryAllyName") and not mob:GetAttribute("IsDead")
+            and (tonumber(mob:GetAttribute("Health")) or 0)>0 and mobRoot(mob)~=nil
+    end
+    local function nearestMob(id)
+        local c=player.Character
+        local root=c and c:FindFirstChild("HumanoidRootPart")
+        local mobs=workspace:FindFirstChild("Mobs")
+        if not root or not mobs then return nil end
+        local best,distance=nil,math.huge
+        for _,mob in mobs:GetChildren() do
+            if npcTarget(mob,id) then
+                local target=mobRoot(mob)
+                local delta=(target.Position-root.Position).Magnitude
+                if delta<distance then best,distance=target,delta end
+            end
+        end
+        return best
+    end
+    local function matchesSpawn(instance,container,id)
+        local canonical=definitions[id].Mob:gsub("[%s_%-]",""):lower()
+        local current=instance
+        while current do
+            local mob=current:GetAttribute("Mob")
+            local kind=current:GetAttribute("MobKind")
+            local name=tostring(current.Name or ""):gsub("[%s_%-]",""):lower()
+            if mob==definitions[id].Mob or kind==definitions[id].Mob or name==canonical or name==canonical.."spawn" then return true end
+            if current==container then break end
+            current=current.Parent
+        end
+        return false
+    end
+    local function questMetadata(id)
+        local ok,raw=pcall(function()return storage:GetAttribute("QuestMarkers")end)
+        if ok and raw~=metadataRaw then
+            metadataRaw,metadata=raw,{}
+            if type(raw)=="string" and raw~="" then
+                local decoded,value=pcall(function()return game:GetService("HttpService"):JSONDecode(raw)end)
+                if decoded and type(value)=="table" then metadata=value end
+            end
+        end
+        return type(metadata[id])=="table" and metadata[id] or nil
+    end
+    local function serverNow()
+        local ok,value=pcall(function()return workspace:GetServerTimeNow()end)
+        return ok and type(value)=="number" and value or os.time()
+    end
+    local function remainingCooldown(id,quests)
+        local record=records[id]
+        local remaining=math.max(0,record.CooldownUntil-os.clock())
+        local meta=questMetadata(id)
+        local last=type(quests.lastDone)=="table" and tonumber(quests.lastDone[id]) or nil
+        local duration=meta and tonumber(meta.cooldown) or nil
+        if last and duration and duration>0 then remaining=math.max(remaining,last+duration-serverNow()) end
+        return math.max(0,remaining)
+    end
+    local function metadataBlocked(id,quests)
+        local meta=questMetadata(id)
+        if not meta then return nil end
+        if meta.repeatable==false and completedCount(quests,id)>0 then return "ทำเควสนี้ครบแล้ว • NPC ไม่เปิดให้ทำซ้ำ" end
+        if meta.offer==false then return "NPC ยังไม่เปิดให้รับเควสนี้" end
+    end
+    local function validPosition(position)
+        return typeof(position)=="Vector3" and position.X==position.X and position.Y==position.Y
+            and position.Z==position.Z and math.abs(position.X)<math.huge
+            and math.abs(position.Y)<math.huge and math.abs(position.Z)<math.huge
+    end
+    local function pointMarker(position)
+        if not validPosition(position) then return nil end
+        if not huntGoal then
+            huntGoal=Instance.new("Part")
+            huntGoal.Name,huntGoal.Anchored,huntGoal.Transparency="EvernightFloor2QuestPoint",true,1
+            huntGoal.CanCollide,huntGoal.CanTouch,huntGoal.CanQuery=false,false,false
+            huntGoal.Size=Vector3.new(1,1,1)
+            huntGoal.Parent=workspace
+        end
+        huntGoal.Position=position
+        huntZone=nil
+        return huntGoal
+    end
+    local function nearestPoint(points)
+        local c=player.Character
+        local root=c and c:FindFirstChild("HumanoidRootPart")
+        if type(points)~="table" then return nil end
+        local best,distance=nil,math.huge
+        for _,point in pairs(points) do
+            local position
+            if typeof(point)=="Vector3" then position=point
+            elseif type(point)=="table" then
+                local x,y,z=tonumber(point[1] or point.x),tonumber(point[2] or point.y),tonumber(point[3] or point.z)
+                if x and y and z then position=Vector3.new(x,y,z) end
+            end
+            if validPosition(position) then
+                local delta=root and (position-root.Position).Magnitude or 0
+                if delta<distance then best,distance=position,delta end
+            end
+        end
+        return best
+    end
+    local function nativeQuestPoint(id,active,giver)
+        local meta=questMetadata(id)
+        local points
+        if meta then
+            if giver then points=meta.givers
+            elseif active and active.id==id then
+                local steps=type(active.steps)=="table" and active.steps or {}
+                if #steps==0 then steps={{have=tonumber(active.progress) or 0,need=math.max(1,tonumber(active.goal) or 1)}} end
+                for index,step in ipairs(steps) do
+                    if (tonumber(step.have) or 0)<(tonumber(step.need) or 1) then
+                        points=type(meta.goals)=="table" and meta.goals[tostring(index)] or nil
+                        break
+                    end
+                end
+            end
+        end
+        local exactPosition=nearestPoint(points)
+        -- Both supported quests are outdoors. Their surface elevations must not be
+        -- redirected to the game's unrelated cave entrance/exit solely by height.
+        if active and active.id==id and waypoint and type(waypoint.getQuest)=="function" then
+            local ok,position,label,title=pcall(waypoint.getQuest)
+            local expected=meta and meta.title or definitions[id].Title
+            if ok and validPosition(position) and title==expected then
+                local redirected=false
+                if exactPosition and (position-exactPosition).Magnitude>0.1 then
+                    for _,attribute in {"QuestMarkerEntrance","QuestMarkerExit"} do
+                        local available,transition=pcall(function()return storage:GetAttribute(attribute)end)
+                        if available and validPosition(transition) and (position-transition).Magnitude<=0.1 then redirected=true break end
+                    end
+                end
+                if not redirected then return position,"Waypoint",label end
+            end
+        end
+        return exactPosition,exactPosition and "QuestMarkers" or nil
+    end
+    local function huntMarker(id,active)
+        local position,source,label=nativeQuestPoint(id,active,false)
+        if position then return pointMarker(position),nearestMob(id)==nil,true,source,label end
+        local target=nearestMob(id)
+        if target then return target,false,false,"Boss" end
+        local c=player.Character
+        local root=c and c:FindFirstChild("HumanoidRootPart")
+        local floor=workspace:FindFirstChild("Floor2")
+        local zones=floor and floor:FindFirstChild("MobZones")
+        local candidates=zones and zones:GetChildren() or {}
+        if not zones and floor and type(floor.QueryDescendants)=="function" then candidates=floor:QueryDescendants("BasePart[$Mob]") end
+        local best,distance=nil,math.huge
+        if root then
+            for _,zone in candidates do
+                local point=markerPart(zone)
+                if point and zone:GetAttribute("Mob")==definitions[id].Mob then
+                    local delta=(point.Position-root.Position).Magnitude
+                    if delta<distance then best,distance=point,delta end
+                end
+            end
+        end
+        local spawnFolders,spawnDistance={},math.huge
+        if floor and root then
+            for _,name in {"MinibossSpawns","bossSpawn"} do
+                local container=floor:FindFirstChild(name)
+                if container then
+                    table.insert(spawnFolders,container)
+                    local points=type(container.QueryDescendants)=="function" and container:QueryDescendants("BasePart")
+                        or type(container.GetChildren)=="function" and container:GetChildren() or {}
+                    local selfPoint=markerPart(container)
+                    if selfPoint then table.insert(points,selfPoint) end
+                    for _,point in points do
+                        if markerPart(point)==point and matchesSpawn(point,container,id) then
+                            local delta=(point.Position-root.Position).Magnitude
+                            if delta<spawnDistance then
+                                local remembered=records[id].SpawnPoint
+                                if not remembered then remembered={} records[id].SpawnPoint=remembered end
+                                remembered.Position=point.Position spawnDistance=delta
+                            end
+                            if delta<distance then best,distance=point,delta end
+                        end
+                    end
+                end
+            end
+        end
+        if not best then best=records[id].SpawnPoint end
+        if not best then return nil,true,false,nil end
+        if huntZone~=best or not huntGoal then
+            local params=RaycastParams.new()
+            params.FilterType=Enum.RaycastFilterType.Exclude params.RespectCanCollide=true
+            local ignored={}
+            if huntGoal then table.insert(ignored,huntGoal) end
+            if zones then table.insert(ignored,zones) else for _,zone in candidates do table.insert(ignored,zone) end end
+            for _,container in spawnFolders do table.insert(ignored,container) end
+            local mobs=workspace:FindFirstChild("Mobs")
+            if mobs then table.insert(ignored,mobs) end
+            if c then table.insert(ignored,c) end
+            params.FilterDescendantsInstances=ignored
+            local hit=workspace:Raycast(best.Position+Vector3.new(0,500,0),Vector3.new(0,-1500,0),params)
+            if not hit then return nil,true,false,nil end
+            pointMarker(hit.Position+Vector3.new(0,3,0)) huntZone=best
+        end
+        return huntGoal,true,false,"Spawn"
+    end
+    local function trackCompletions(data,active,quests)
+        for _,id in order do
+            local count=completedCount(quests,id)
+            local previous=baselines[id]
+            if previous==nil then previous=count end
+            local run=observed[id]
+            if run and not run.Counted and count>run.Base and count>previous then
+                run.Counted=true
+                state.QuestRuns+=1
+                state.QuestCompletedById[id]=count
+                records[id].Offer=nil
+                records[id].Operation,records[id].Attempts,records[id].LastRequest=nil,0,-100
+                if pendingClaim and pendingClaim.Id==id then pendingClaim.ConfirmedAt=os.clock() end
+                advance(id)
+            end
+            baselines[id]=count
+            if active and active.id==id and (not run or run.Counted and active.complete~=true) then observed[id]={Base=count} end
+            -- An observed run is retained when active disappears before completed replicates.
+        end
+        if pendingClaim then
+            local now=os.clock()
+            if pendingClaim.ConfirmedAt then
+                local amount=stoneCount(data)
+                local delta=amount and pendingClaim.Stones and math.max(0,amount-pendingClaim.Stones) or 0
+                if delta>0 then
+                    local id=pendingClaim.Id
+                    state.QuestStoneEarned+=delta
+                    state.Floor2QuestStoneById[id]=(tonumber(state.Floor2QuestStoneById[id]) or 0)+delta
+                    state.QuestLastStoneDelta=delta
+                    state.NpcQuestStatus="รับหินอัปเกรดแล้ว +"..tostring(delta)
+                    pendingClaim=nil
+                elseif now-pendingClaim.ConfirmedAt>=10 then
+                    -- Completion is confirmed; an unobserved reward amount is never invented.
+                    pendingClaim=nil
+                end
+            elseif now-pendingClaim.Started>=15 and not active then
+                pendingClaim=nil
+            end
+        end
+    end
+    local function selectedId(active,quests)
+        local selected=state.SelectedStoneQuest
+        if selected~="All" then return definitions[selected] and selected or nil end
+        if active and definitions[active.id] then return active.id end
+        local soonest,remaining=nil,math.huge
+        for offset=0,#order-1 do
+            local id=order[(cursor+offset-1)%#order+1]
+            local record=records[id]
+            if not record.Blocked and not record.RequestError then
+                local wait=remainingCooldown(id,quests)
+                if wait<=0 and not metadataBlocked(id,quests) then return id end
+                if wait>0 and wait<remaining then soonest,remaining=id,wait end
+            end
+        end
+        return soonest or order[cursor]
+    end
+    function api.Snapshot()
+        if currentFloor~=2 then latest=storyApi.Snapshot() return latest end
+        local story=storyApi.Snapshot()
+        if story.Phase=="Scene" then latest=story return story end
+        local data=dataNow()
+        local active,quests=activeQuest(data)
+        trackCompletions(data,active,quests)
+        local id=selectedId(active,quests)
+        if not id then latest=story return story end
+        if pendingClaim and not active then id=pendingClaim.Id end
+        local def,record=definitions[id],records[id]
+        local npc=npcMarker(id)
+        local cooldown=remainingCooldown(id,quests)
+        local snapshot={QuestId=id,Title=def.Title,IsNpc=true,Stage=0,Remaining=0,Approach=3.5,
+            Active=active~=nil,Marker=npc,OwnScene=false,Step={kind="talk",radius=35},
+            RewardObserved=state.Floor2QuestStoneById[id],LastDone=type(quests.lastDone)=="table" and quests.lastDone[id] or nil}
+        if active and active.id~=id then
+            snapshot.Phase,snapshot.Status="OtherQuest","พัก • มีเควส NPC อื่นทำอยู่"
+        elseif record.RequestError then
+            snapshot.Phase,snapshot.Status="Locked",record.RequestError
+        elseif pendingClaim and not active then
+            snapshot.Phase,snapshot.Status="Finishing",pendingClaim.ConfirmedAt and "ส่งเควสแล้ว • รอยืนยันจำนวนหิน" or "รอเกมยืนยันส่งเควส"
+        elseif not talkRemote or not acceptRemote then
+            snapshot.Phase,snapshot.Status="Unavailable","รอระบบเควสชั้น 2 โหลด"
+        elseif active and active.complete~=true then
+            local step=type(active.steps)=="table" and active.steps[1] or nil
+            snapshot.Have=tonumber(step and step.have) or tonumber(active.progress) or 0
+            snapshot.Need=tonumber(step and step.need) or tonumber(active.goal) or 1
+            snapshot.Phase,snapshot.Status="Fight","ล่า "..def.Mob.." • "..snapshot.Have.."/"..snapshot.Need
+            snapshot.Marker,snapshot.SpawnWaiting,snapshot.NativePoint,snapshot.PointSource=huntMarker(id,active)
+            snapshot.WaitStatus="รอ "..def.Mob.." เกิดที่จุดเควส"
+            snapshot.Step={kind="fight",radius=snapshot.NativePoint and 35 or 1000}
+            if snapshot.NativePoint then snapshot.Status="ตามจุดเควสของเกม • "..def.Mob end
+            if not snapshot.Marker then snapshot.Phase,snapshot.Status="Unavailable","รอจุดเควส "..def.Mob.." จากเกม" end
+        elseif not active and cooldown>0 then
+            snapshot.Phase,snapshot.Status="Cooldown","รอคูลดาวน์ "..def.Title.." จาก NPC"
+            snapshot.Remaining=cooldown
+        elseif not active and (record.Blocked or metadataBlocked(id,quests)) then
+            snapshot.Phase,snapshot.Status="Locked",record.Blocked or metadataBlocked(id,quests)
+        elseif not npc then
+            local position,source=nativeQuestPoint(id,active,true)
+            snapshot.Marker=position and pointMarker(position) or townMarker()
+            snapshot.NativePoint=position~=nil snapshot.PointSource=source
+            snapshot.Phase=snapshot.Marker and "Reach" or "Unavailable"
+            snapshot.Status=snapshot.Marker and "ไปจุด NPC ของเกม • รอ NPC โหลด" or "รอจุด NPC เควสจากเกม"
+        elseif active then
+            local step=type(active.steps)=="table" and active.steps[1] or nil
+            snapshot.Have=tonumber(step and step.have) or tonumber(active.progress) or 0
+            snapshot.Need=tonumber(step and step.need) or tonumber(active.goal) or 1
+            snapshot.Phase,snapshot.Status="NpcClaim","ครบแล้ว • กลับไปส่ง "..def.Title
+        elseif record.Offer then
+            snapshot.Phase,snapshot.Status="NpcAccept","รับ "..def.Title.." • "..def.Mob.." 1 ตัว"
+        else
+            snapshot.Phase,snapshot.Status="NpcOffer","เดินไปหา NPC เควส "..def.Title
+        end
+        latest=snapshot
+        return snapshot
+    end
+    function api.Reset(...)
+        for _,record in pairs(records) do
+            record.Operation,record.Attempts,record.LastRequest=nil,0,-100
+            record.RequestError=nil
+        end
+        -- Server done/locked and reported cooldowns survive toggling automation.
+        return storyApi.Reset(...)
+    end
+    function api.Marker(...)
+        if latest and latest.IsNpc then return latest.Marker end
+        return storyApi.Marker(...)
+    end
+    local function nearbyTarget(mob)
+        local c=player.Character
+        local root=c and c:FindFirstChild("HumanoidRootPart")
+        local target=mob and mobRoot(mob)
+        if not root or not target then return false end
+        local delta=target.Position-root.Position
+        return Vector3.new(delta.X,0,delta.Z).Magnitude<=80 and math.abs(delta.Y)<=16
+    end
+    function api.GuardRoot()
+        if latest and latest.IsNpc then
+            if latest.Phase=="Fight" then
+                local target=nearestMob(latest.QuestId)
+                local c=player.Character
+                local root=c and c:FindFirstChild("HumanoidRootPart")
+                if root and target then
+                    local delta=target.Position-root.Position
+                    if Vector3.new(delta.X,0,delta.Z).Magnitude<=80 and math.abs(delta.Y)<=16 then return root end
+                end
+            end
+            return latest.Marker
+        end
+        return storyApi.GuardRoot()
+    end
+    function api.IsTarget(mob)
+        if latest and latest.IsNpc then
+            return latest.Phase=="Fight" and npcTarget(mob,latest.QuestId)
+                and (not latest.NativePoint or nearbyTarget(mob)) or false
+        end
+        return storyApi.IsTarget(mob)
+    end
+    function api.Choose(...)
+        if latest and latest.IsNpc then return false end
+        return storyApi.Choose(...)
+    end
+    local function packetText(packet)
+        return type(packet.lines)=="table" and table.concat(packet.lines," ") or tostring(packet.message or packet.text or "")
+    end
+    local function cooldownSeconds(packet)
+        local numeric=tonumber(packet.remaining) or tonumber(packet.remainingSeconds) or tonumber(packet.retryAfter)
+        if numeric and numeric==numeric and numeric>0 and numeric<math.huge then return numeric end
+        local message=packetText(packet):lower()
+        local hours=tonumber(message:match("(%d+)%s*h")) or 0
+        local minutes=tonumber(message:match("(%d+)%s*m")) or 0
+        local seconds=tonumber(message:match("(%d+)%s*s")) or 0
+        local delay=hours*3600+minutes*60+seconds
+        if delay>0 then return delay end
+        local h,m,s=message:match("(%d+):(%d+):(%d+)")
+        if h then return tonumber(h)*3600+tonumber(m)*60+tonumber(s) end
+        m,s=message:match("(%d+):(%d+)")
+        if m then return tonumber(m)*60+tonumber(s) end
+    end
+    local function requestProblem(id,message)
+        records[id].RequestError=message
+        if state.SelectedStoneQuest=="All" then
+            -- Keep the active quest; pause this ID after exhausted requests.
+            advance(id)
+            return false
+        end
+        return nil,message
+    end
+    function api.Request(kind,root,marker)
+        if currentFloor~=2 or not state.Alive or not state.Enabled or state.Mode~="Quest" then return false end
+        local snapshot=api.Snapshot()
+        if not snapshot.IsNpc then return false end
+        local op=snapshot.Phase
+        if op~="NpcOffer" and op~="NpcAccept" and op~="NpcClaim" then return false end
+        if not root or not marker or marker~=snapshot.Marker or (root.Position-marker.Position).Magnitude>6 then return false end
+        local id=snapshot.QuestId
+        local record=records[id]
+        if record.Operation~=op then record.Operation,record.Attempts,record.LastRequest=op,0,-100 end
+        if os.clock()-record.LastRequest<4 then return false end
+        if record.Attempts>=3 then return requestProblem(id,"NPC ไม่ตอบสนอง • ปิดเปิดออโต้เพื่อลองใหม่") end
+        record.Attempts,record.LastRequest=record.Attempts+1,os.clock()
+        if op=="NpcAccept" then
+            local active=activeQuest(dataNow())
+            if active or not record.Offer or record.Offer.id~=id then return false end
+            local accepted,message=acceptRemote:InvokeServer(id)
+            state.NpcQuestStatus=accepted and "รับเควสแล้ว • รอข้อมูลเกม" or tostring(message or "รอ NPC ยืนยันรับเควส")
+            return accepted==true
+        end
+        if op=="NpcClaim" and not pendingClaim then
+            local data=dataNow()
+            local active,quests=activeQuest(data)
+            if not active or active.id~=id or active.complete~=true then return false end
+            pendingClaim={Id=id,Base=completedCount(quests,id),Stones=stoneCount(data),Started=os.clock()}
+        end
+        local packet=talkRemote:InvokeServer(id)
+        if type(packet)~="table" then return false end
+        state.NpcQuestReply={Kind=packet.kind,Id=packet.id,Phase=op,Text=packetText(packet),
+            Distance=(root.Position-marker.Position).Magnitude}
+        if packet.kind=="offer" then
+            if packet.id~=id then return requestProblem(id,"NPC ตอบกลับเป็นเควสอื่น • พักเควสนี้") end
+            record.Offer=packet
+            state.NpcQuestStatus="พร้อมรับ "..definitions[id].Title
+        elseif packet.kind=="far" then
+            state.NpcQuestStatus="เดินเข้าใกล้ NPC อีกนิด"
+        elseif packet.kind=="cooldown" then
+            local delay=cooldownSeconds(packet)
+            -- The fallback is a polling interval, not an assumed quest cooldown.
+            record.CooldownUntil=os.clock()+(delay or 60)
+            record.CooldownUnknown=delay==nil
+            record.Offer,record.Operation,record.Attempts,record.LastRequest=nil,nil,0,-100
+            advance(id)
+            state.NpcQuestStatus="NPC ติดคูลดาวน์ • สลับเควสที่พร้อม"
+        elseif packet.kind=="done" or packet.kind=="locked" then
+            record.Blocked=packetText(packet)
+            if record.Blocked=="" then record.Blocked="NPC ไม่เปิดให้รับเควสนี้ในตอนนี้" end
+            record.Offer=nil
+            advance(id)
+            state.NpcQuestStatus=record.Blocked
+        else
+            state.NpcQuestStatus="รอผลเควสจากเกม"
+        end
+        return true
+    end
+    function api.CloseMenus(...) return storyApi.CloseMenus(...) end
+    function api.Weapon(...) return storyApi.Weapon(...) end
+    function api.WeaponReady(...) return storyApi.WeaponReady(...) end
+    function api.EquipWeapon(...) return storyApi.EquipWeapon(...) end
+    function api.StopFailedReplay(...) return storyApi.StopFailedReplay(...) end
+    local destroy=state.Destroy
+    state.Destroy=function(...)
+        if huntGoal then huntGoal:Destroy() huntGoal=nil end
+        return destroy(...)
+    end
+    return api
+end
+
 -- Native NPC quest flow, separate from Story missions and their cooldowns.
 local function resolveNpcStoneQuest(storyApi)
     local id,title,mobKind="nepenthesHuntQuest","Forest Clearing","Little Nepenthes"
@@ -3085,6 +3693,31 @@ local function resolveNpcStoneQuest(storyApi)
         if active and active.id==id and not observedRun then observedRun={Base=count} end
         -- Keep an observed run until the completion counter acknowledges a delayed claim.
     end
+    local function questOrder()
+        if type(storyApi.Order)=="function" then return storyApi.Order() end
+        if type(normalizeFloor1QuestOrder)=="function" then
+            state.Floor1QuestOrder=normalizeFloor1QuestOrder(state.Floor1QuestOrder)
+            return state.Floor1QuestOrder
+        end
+        local defaults={"m_forge","m_gallows","nepenthesHuntQuest"}
+        local allowed={m_forge=true,m_gallows=true,nepenthesHuntQuest=true}
+        local result,seen={},{}
+        local value=state.Floor1QuestOrder
+        local indices={}
+        if type(value)=="table" then
+            for index in pairs(value) do
+                if type(index)=="number" and index>=1 and index%1==0 then indices[#indices+1]=index end
+            end
+            table.sort(indices)
+        end
+        for _,index in ipairs(indices) do
+            local key=value[index]
+            if type(key)=="string" and allowed[key] and not seen[key] then result[#result+1]=key seen[key]=true end
+        end
+        for _,key in ipairs(defaults) do if not seen[key] then result[#result+1]=key seen[key]=true end end
+        state.Floor1QuestOrder=result
+        return result
+    end
     function api.Snapshot()
         local story=storyApi.Snapshot()
         local data=dataNow()
@@ -3092,12 +3725,8 @@ local function resolveNpcStoneQuest(storyApi)
         trackNpc(active,quests)
         local explicit=state.SelectedStoneQuest==id
         local all=state.SelectedStoneQuest=="All"
-        local fallback=story.Phase=="Cooldown" or story.Phase=="Locked" or story.Phase=="Unavailable"
-        local useNpc=explicit or (all and not story.Active and ((active and active.id==id) or fallback))
+        if not explicit and not all or all and story.Active then latest=story return story end
         local cooldown=math.max(0,cooldownUntil-os.clock())
-        if useNpc and all and not active and cooldown>0 and story.Phase=="Cooldown"
-            and (tonumber(story.Remaining) or math.huge)<cooldown then useNpc=false end
-        if not useNpc then latest=story return story end
         local snapshot={QuestId=id,Title=title,IsNpc=true,Stage=0,Remaining=0,Approach=3.5,Active=active~=nil,
             Marker=npcMarker(),OwnScene=false,Reward=1,Step={kind="talk",radius=1000}}
         if not snapshot.Marker or not talkRemote or not acceptRemote then
@@ -3125,6 +3754,31 @@ local function resolveNpcStoneQuest(storyApi)
             snapshot.Phase,snapshot.Status="NpcAccept","รับ Forest Clearing • Little Nepenthes 15 ตัว"
         else
             snapshot.Phase,snapshot.Status="NpcOffer","เดินไปหา NPC เควส Forest Clearing"
+        end
+        if all then
+            local rank={}
+            for index,key in ipairs(questOrder()) do rank[key]=index end
+            local npcFirst=(rank[id] or 3)<(rank[story.QuestId] or 4)
+            local useNpc=false
+            if active and active.id==id then
+                -- Finish an accepted NPC quest before starting a newly ready Story mission.
+                useNpc=true
+            elseif story.Phase=="Scene" or story.Phase=="OtherQuest" then
+                useNpc=false
+            else
+                local npcReady=snapshot.Phase=="NpcOffer" or snapshot.Phase=="NpcAccept"
+                local storyReady=story.Phase=="Available"
+                if npcReady and storyReady then useNpc=npcFirst
+                elseif npcReady then useNpc=true
+                elseif storyReady then useNpc=false
+                elseif snapshot.Phase=="Cooldown" and story.Phase=="Cooldown" then
+                    local storyWait=tonumber(story.Remaining) or math.huge
+                    useNpc=snapshot.Remaining<storyWait or snapshot.Remaining==storyWait and npcFirst
+                elseif snapshot.Phase=="Cooldown" then useNpc=true
+                elseif story.Phase=="Cooldown" then useNpc=false
+                else useNpc=npcFirst end
+            end
+            if not useNpc then latest=story return story end
         end
         latest=snapshot
         return snapshot
@@ -4441,7 +5095,11 @@ do
     end
     function api.Update(force)
         if not api.Frame then return end
-        local visible = currentFloor==2 and state.Mode=="Quest" and not state.SettingsOpen
+        local questMode = currentFloor==2 and state.Mode=="Quest" and not state.SettingsOpen
+        api.PageBar.Visible=questMode
+        view.PaintButton(api.BrowseButton,not state.QuestAutoPage)
+        view.PaintButton(api.AutomationButton,state.QuestAutoPage)
+        local visible = questMode and not state.QuestAutoPage
         api.Frame.Visible=visible
         if not visible then api.ReleaseFocus() return end
         local story, signature = storyData(), {}
@@ -4481,7 +5139,14 @@ do
     end
     function api.Mount(parent,h)
         local make,button=h.Make,h.Button
-        local frame=make("Frame",{Name="QuestBrowser",BackgroundTransparency=1,Position=UDim2.fromOffset(12,92),Size=UDim2.fromOffset(280,306),Visible=false},parent)
+        api.PageBar=make("Frame",{Name="Floor2QuestPages",BackgroundTransparency=1,Position=UDim2.fromOffset(190,64),Size=UDim2.fromOffset(280,26),Visible=false,ZIndex=4},parent)
+        api.BrowseButton=button("ข้อมูลเควส",UDim2.fromOffset(136,26),UDim2.fromOffset(0,0),api.PageBar)
+        api.AutomationButton=button("ออโต้หิน",UDim2.fromOffset(136,26),UDim2.fromOffset(144,0),api.PageBar)
+        api.BrowseButton.Name,api.AutomationButton.Name="QuestCatalogPage","StoneAutomationPage"
+        api.BrowseButton.TextSize,api.AutomationButton.TextSize=11,11
+        connect(api.BrowseButton.Activated,function()state.SetQuestAutoPage(false)end)
+        connect(api.AutomationButton.Activated,function()state.SetQuestAutoPage(true)end)
+        local frame=make("Frame",{Name="QuestBrowser",BackgroundTransparency=1,Position=UDim2.fromOffset(12,124),Size=UDim2.fromOffset(280,274),Visible=false},parent)
         api.Frame=frame
         api.ListPage=make("Frame",{Name="ListPage",Size=UDim2.fromScale(1,1),BackgroundTransparency=1},frame)
         local title=h.Text("Title","เควส · โลก 2",0,0,200,22,api.ListPage,16,theme.Text)
@@ -4505,7 +5170,7 @@ do
             x+=g[2]+3
         end
         api.Count=h.Text("ResultCount","",0,92,280,17,api.ListPage,10,theme.Muted)
-        api.Scroll=make("ScrollingFrame",{Name="QuestList",Position=UDim2.fromOffset(0,113),Size=UDim2.fromOffset(280,171),BackgroundTransparency=1,
+        api.Scroll=make("ScrollingFrame",{Name="QuestList",Position=UDim2.fromOffset(0,113),Size=UDim2.fromOffset(280,139),BackgroundTransparency=1,
             BorderSizePixel=0,ScrollBarThickness=3,ScrollBarImageColor3=theme.Accent,CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y,ClipsDescendants=true},api.ListPage)
         make("UIListLayout",{Padding=UDim.new(0,5),SortOrder=Enum.SortOrder.LayoutOrder},api.Scroll)
         make("UIPadding",{PaddingTop=UDim.new(0,1),PaddingLeft=UDim.new(0,1),PaddingBottom=UDim.new(0,2)},api.Scroll)
@@ -4530,7 +5195,7 @@ do
         connect(back.Activated,state.ShowQuestList)
         api.Badge=h.Text("Availability","",90,3,190,21,api.DetailPage,11,theme.Frost)
         api.Badge.TextXAlignment=Enum.TextXAlignment.Right
-        api.DetailScroll=make("ScrollingFrame",{Name="QuestDetails",Position=UDim2.fromOffset(0,36),Size=UDim2.fromOffset(280,248),BackgroundTransparency=1,
+        api.DetailScroll=make("ScrollingFrame",{Name="QuestDetails",Position=UDim2.fromOffset(0,36),Size=UDim2.fromOffset(280,216),BackgroundTransparency=1,
             BorderSizePixel=0,ScrollBarThickness=3,ScrollBarImageColor3=theme.Accent,CanvasSize=UDim2.new(),AutomaticCanvasSize=Enum.AutomaticSize.Y,ClipsDescendants=true},api.DetailPage)
         make("UIListLayout",{Padding=UDim.new(0,7),SortOrder=Enum.SortOrder.LayoutOrder},api.DetailScroll)
         make("UIPadding",{PaddingLeft=UDim.new(0,2),PaddingTop=UDim.new(0,1),PaddingBottom=UDim.new(0,8)},api.DetailScroll)
@@ -4559,12 +5224,139 @@ do
         api.Objective=detailText("Objective",12,theme.Text)
         detailText("UnlockHeading",11,theme.Muted,true).Text="เงื่อนไข / สถานะ"
         api.Unlock=detailText("Unlock",11,theme.Frost)
-        h.Text("ReadOnly","ดูข้อมูลเท่านั้น · ยังไม่รับหรือทำออโต้",0,290,280,16,frame,10,theme.Muted)
+        h.Text("ReadOnly","ข้อมูลเควส · เลือกออโต้หินเพื่อเริ่ม",0,258,280,16,frame,10,theme.Muted)
         api.Update(true)
     end
 end
 end
 -- END FLOOR 2 QUEST BROWSER
+
+-- Preference-only controller. The factory can be rendered with an isolated state.
+local function createFloor1QuestOrderUi(state, currentFloor, normalize, save, refresh)
+    local api = {Rows = {}}
+    local names = {
+        m_forge = "Hold the Forge",
+        m_gallows = "Scarlet Gallows",
+        nepenthesHuntQuest = "Forest Clearing",
+    }
+    local shortNames = {m_forge = "Forge", m_gallows = "Gallows", nepenthesHuntQuest = "Forest"}
+    local mounted, palette
+    local savedHint
+    state.Floor1QuestOrderOpen = false
+
+    function state.GetFloor1QuestOrder()
+        local result = {}
+        for index, id in ipairs(normalize(state.Floor1QuestOrder)) do result[index] = id end
+        return result
+    end
+
+    function state.SetFloor1QuestOrder(value)
+        if not state.Alive or currentFloor ~= 1 or type(value) ~= "table" then return false end
+        local normalized, result = normalize(value), {}
+        for index, id in ipairs(normalized) do result[index] = id end
+        state.Floor1QuestOrder = result
+        savedHint = "บันทึกแล้ว · ใช้กับเควสถัดไป"
+        if save then save() end
+        api.Update()
+        if refresh then refresh() end
+        return true
+    end
+
+    function state.MoveFloor1Quest(id, delta)
+        if not state.Alive or currentFloor ~= 1 or (delta ~= -1 and delta ~= 1) then return false end
+        local order = state.GetFloor1QuestOrder()
+        local index = table.find(order, id)
+        if not index or index + delta < 1 or index + delta > #order then return false end
+        order[index], order[index + delta] = order[index + delta], order[index]
+        return state.SetFloor1QuestOrder(order)
+    end
+
+    function api.Summary()
+        local result = {}
+        for index, id in ipairs(state.GetFloor1QuestOrder()) do result[index] = shortNames[id] or id end
+        return table.concat(result, " → ")
+    end
+
+    function api.Close()
+        state.Floor1QuestOrderOpen = false
+        api.Update()
+    end
+
+    function api.Open()
+        if not state.Alive or currentFloor ~= 1 or state.Mode ~= "Quest" or state.SettingsOpen
+            or state.WorldOpen or state.MenuVisible == false then return false end
+        state.Floor1QuestOrderOpen = true
+        state.SkillPickerOpen, state.MaterialPickerOpen = false, false
+        api.Update()
+        if refresh then refresh() end
+        return true
+    end
+
+    function api.Update()
+        if not mounted then return end
+        local visible = state.Alive and currentFloor == 1 and state.Mode == "Quest"
+            and state.MenuVisible ~= false and not state.SettingsOpen and not state.WorldOpen
+        if not visible or state.SkillPickerOpen then state.Floor1QuestOrderOpen = false end
+        api.Button.Visible = visible
+        api.Overlay.Visible = visible and state.Floor1QuestOrderOpen == true
+        api.Hint.Text = state.SelectedStoneQuest == "All" and "ใช้ในโหมด วนเควสที่พร้อม"
+            or "เลือก วนเควสที่พร้อม เพื่อใช้ลำดับนี้"
+        api.Footer.Text = savedHint or "ใช้กับเควสถัดไป · ข้ามเควสที่ยังไม่พร้อม"
+        local order = state.GetFloor1QuestOrder()
+        for index, row in ipairs(api.Rows) do
+            row.Label.Text = tostring(index) .. ".  " .. (names[order[index]] or tostring(order[index]))
+            for _, entry in ipairs({{row.Up, index > 1}, {row.Down, index < #order}}) do
+                local control, enabled = entry[1], entry[2]
+                control.Active, control.Selectable, control.AutoButtonColor = enabled, enabled, enabled
+                control.TextColor3 = enabled and palette.Text or palette.Muted
+                control.BackgroundTransparency = enabled and 0 or 0.65
+            end
+        end
+    end
+
+    function api.Mount(parent, questInfo, h, theme)
+        if mounted or currentFloor ~= 1 then return false end
+        mounted, palette = true, theme
+        questInfo.Title.Size = UDim2.fromOffset(176, 18)
+        questInfo.Title.TextTruncate = Enum.TextTruncate.AtEnd
+        api.Button = h.Button("ลำดับเควส", UDim2.fromOffset(78, 20), UDim2.fromOffset(190, 4), questInfo)
+        api.Button.Name, api.Button.TextSize = "OpenFloor1QuestOrder", 10
+        h.Connect(api.Button.Activated, api.Open)
+        api.Overlay = h.Make("Frame", {
+            Name = "Floor1QuestOrderOverlay", Position = UDim2.fromOffset(0, 0), Size = UDim2.fromScale(1, 1),
+            BackgroundColor3 = theme.Background, BackgroundTransparency = 0.08,
+            BorderSizePixel = 0, Active = true, Visible = false, ZIndex = 60,
+        }, parent)
+        api.Panel = h.Card("Floor1QuestOrderPanel", 0, 0, 280, 222, api.Overlay)
+        api.Panel.ZIndex, api.Panel.Active = 61, true
+        local title = h.Text("Title", "ลำดับเควส · ชั้น 1", 12, 9, 224, 24, api.Panel, 13, theme.AccentLight)
+        title.Font, title.ZIndex = Enum.Font.GothamBold, 62
+        api.Hint = h.Text("Hint", "", 12, 38, 256, 20, api.Panel, 10, theme.Muted)
+        api.Hint.ZIndex = 62
+        api.CloseButton = h.Button("×", UDim2.fromOffset(26, 24), UDim2.fromOffset(244, 9), api.Panel)
+        api.CloseButton.Name, api.CloseButton.TextSize, api.CloseButton.ZIndex = "CloseFloor1QuestOrder", 16, 63
+        h.Connect(api.CloseButton.Activated, api.Close)
+        for index = 1, 3 do
+            local slot = index
+            local frame = h.Card("QuestOrderRow" .. index, 10, 64 + (index - 1) * 40, 260, 34, api.Panel)
+            frame.ZIndex = 62
+            local label = h.Text("QuestName", "", 9, 0, 169, 34, frame, 11, theme.Text)
+            label.ZIndex = 63
+            local up = h.Button("↑", UDim2.fromOffset(28, 26), UDim2.fromOffset(188, 4), frame)
+            local down = h.Button("↓", UDim2.fromOffset(28, 26), UDim2.fromOffset(222, 4), frame)
+            up.Name, down.Name, up.ZIndex, down.ZIndex = "MoveUp", "MoveDown", 63, 63
+            up.TextSize, down.TextSize = 16, 16
+            api.Rows[index] = {Label = label, Up = up, Down = down}
+            h.Connect(up.Activated, function() state.MoveFloor1Quest(state.GetFloor1QuestOrder()[slot], -1) end)
+            h.Connect(down.Activated, function() state.MoveFloor1Quest(state.GetFloor1QuestOrder()[slot], 1) end)
+        end
+        api.Footer = h.Text("NextQuestHint", "", 12, 188, 256, 24, api.Panel, 10, theme.Muted)
+        api.Footer.TextWrapped, api.Footer.ZIndex = true, 62
+        api.Update()
+        return true
+    end
+    return api
+end
 
 local function updateStatus()
     if not statusLabel then return end
@@ -4610,19 +5402,23 @@ local function updateStatus()
     elseif state.Mode == "Quest" then
         local selected = stoneQuestUiChoices[state.SelectedStoneQuest] or stoneQuestUiChoices.All
         local active = state.Enabled and stoneQuestUiChoices[state.QuestId] or nil
+        if currentFloor == 1 and view.Floor1QuestOrderUi then
+            stoneQuestUiChoices.All.Reward = "ลำดับ: " .. view.Floor1QuestOrderUi.Summary()
+        end
         local row = active or selected
         selection = row.Title
         local seconds = math.max(0,math.ceil(tonumber(state.QuestRemaining) or 0))
         local phaseSeconds = math.max(0,math.ceil(tonumber(state.QuestPhaseRemaining or state.PhaseRemaining or state.QuestGuardRemaining) or 0))
         local phase = state.Enabled and state.QuestPhase or "Stopped"
-        detail = phase == "Cooldown" and string.format("รอเควสพร้อม %02d:%02d นาที",math.floor(seconds/60),seconds%60)
+        detail = phase == "Cooldown" and currentFloor == 2 and "รอ NPC เปิดเควสอีกครั้ง · ตรวจสถานะอัตโนมัติ"
+            or phase == "Cooldown" and string.format("รอเควสพร้อม %02d:%02d นาที",math.floor(seconds/60),seconds%60)
             or phase == "Defend" and string.format("ป้องกันอีก %02d:%02d นาที",math.floor(phaseSeconds/60),phaseSeconds%60)
             or (phase == "Fight" or phase == "Duel") and ((phase == "Duel" and "ดวล" or "สู้มอน") .. " " .. uiNumber(state.QuestHave) .. "/" .. uiNumber(state.QuestNeed))
             or phase == "Reach" and "กำลังเดินไปจุดเควส"
             or state.Enabled and ("กำลังทำ " .. tostring(state.QuestTitle or row.Title))
             or "เลือกเควสที่ต้องการ แล้วกดเริ่ม"
         detail ..= "\nจบ " .. uiNumber(state.QuestRuns) .. " · พลาด " .. uiNumber(state.QuestFailures) .. " · หินจากเควส +" .. uiNumber(state.QuestStoneEarned)
-        if currentFloor == 1 then
+        if currentFloor == 1 or state.QuestAutoPage then
             if setIdentity then setIdentity(8) end
             view.QuestInfo.Title.Text = state.SelectedStoneQuest == "All" and active and ("ออโต้รวม · " .. row.Title) or row.Title
             view.QuestInfo.Duration.Text = row.Duration
@@ -4631,9 +5427,9 @@ local function updateStatus()
             view.QuestInfo.Items.Text = row.Items
         end
         action = state.Enabled and "หยุดออโต้เควส" or "เริ่มออโต้เควส"
-        if currentFloor == 2 then
-            heading, detail = "เควสชั้น 2 • ตรวจข้อมูลเท่านั้น", "เลือกเควสเพื่อดูเป้าหมาย รางวัล และเงื่อนไข"
-            action, actionColor = "ยังไม่เปิดออโต้เควสชั้น 2", theme.Disabled
+        if currentFloor == 2 and not state.QuestAutoPage then
+            heading, detail = "เควสชั้น 2 • ดูรางวัล", "เลือกเควสเพื่อดูรายละเอียด หรือเปิดหน้าออโต้หิน"
+            action, actionColor = "เปิดหน้าออโต้หินเพื่อเริ่ม", theme.Disabled
         end
     elseif state.Mode == "Mining" then
         detail = (currentFloor == 2 and ("Crystallite +" .. uiNumber(state.CrystalliteGained))
@@ -4656,8 +5452,9 @@ local function updateStatus()
     selectedLabel.Text = selection
     startButton.Text, startButton.BackgroundColor3 = action, actionColor
     local compactControls = state.Mode == "Craft" or state.Mode == "Sell"
-    list.Size = UDim2.fromOffset(280, state.Mode == "Quest" and 100 or compactControls and 114 or 142)
-    list.Position = UDim2.fromOffset(0,state.Mode == "Quest" and 0 or 56)
+    list.Size = UDim2.fromOffset(280, state.Mode == "Quest" and (currentFloor == 2 and 76 or 100) or compactControls and 114 or 142)
+    list.Position = UDim2.fromOffset(0,state.Mode == "Quest" and (currentFloor == 2 and 32 or 0) or 56)
+    view.QuestInfo.Position = UDim2.fromOffset(0,currentFloor == 2 and 112 or 106)
     craftControls.Visible, sellControls.Visible = state.Mode == "Craft", state.Mode == "Sell"
     craftMaterialButton.Visible, sellSelectAllButton.Visible, warpButton.Visible = state.Mode == "Craft", state.Mode == "Sell", state.Mode == "Mining"
     craftMaterialButton.Text, craftCapacityLabel.Text = materialText, capacityText
@@ -4670,7 +5467,7 @@ local function updateStatus()
     view.Search.TextEditable = not state.Selling and not state.Crafting and not state.Travelling
     view.ClearSearch.Visible = view.Search.Text ~= ""
     view.Search.PlaceholderText = state.Mode == "Sell" and "ค้นหาชื่ออาวุธ / รหัสชิ้น" or state.Mode == "Craft" and "ค้นหาชนิดอาวุธ" or state.Mode == "Mining" and (currentFloor == 2 and "ค้นหา Crystallite / เขตขุด" or "ค้นหา Steel / Iron") or "ค้นหามอนสเตอร์"
-    view.Main.Visible, view.Settings.Visible = not state.SettingsOpen and not (currentFloor == 2 and state.Mode == "Quest"), state.SettingsOpen
+    view.Main.Visible, view.Settings.Visible = not state.SettingsOpen and not (currentFloor == 2 and state.Mode == "Quest" and not state.QuestAutoPage), state.SettingsOpen
     questBrowser.Update()
     view.MaterialPopup.Visible = state.Mode == "Craft" and state.MaterialPickerOpen and not state.SettingsOpen
     view.PaintButton(combatTab, state.Mode == "Combat")
@@ -4678,7 +5475,7 @@ local function updateStatus()
     view.PaintButton(craftTab, state.Mode == "Craft")
     view.PaintButton(sellTab, state.Mode == "Sell")
     view.PaintButton(view.QuestTab, state.Mode == "Quest")
-    view.QuestInfo.Visible, list.Visible, view.Search.Visible = state.Mode == "Quest" and currentFloor == 1, state.Mode ~= "Quest" or currentFloor == 1, state.Mode ~= "Quest"
+    view.QuestInfo.Visible, list.Visible, view.Search.Visible = state.Mode == "Quest" and (currentFloor == 1 or state.QuestAutoPage), state.Mode ~= "Quest" or currentFloor == 1 or state.QuestAutoPage, state.Mode ~= "Quest"
     selectedLabel.Visible = state.Mode ~= "Quest"
     if state.Mode == "Quest" then view.ClearSearch.Visible = false end
     view.PaintButton(view.SettingsButton, state.SettingsOpen)
@@ -4712,7 +5509,7 @@ local function updateStatus()
     end
     view.SkillButton.Text = "สกิล " .. selectedSkills .. "/4"
     view.SkillButton.Visible = state.Mode == "Combat" or state.Mode == "Quest"
-    view.SkillButton.Position = UDim2.fromOffset(182,state.Mode == "Quest" and 174 or 30)
+    view.SkillButton.Position = UDim2.fromOffset(182,state.Mode == "Quest" and (currentFloor == 2 and 180 or 174) or 30)
     view.SkillPicker.Visible = state.SkillPickerOpen and not state.SettingsOpen
     view.SkillsToggle.Text = state.SkillsEnabled and "ออโต้สกิล: เปิด" or "ออโต้สกิล: ปิด"
     view.PaintButton(view.SkillsToggle,state.SkillsEnabled)
@@ -4728,6 +5525,7 @@ local function updateStatus()
         view.InventoryNoticeText.Text = state.InventoryWebhookStatus or "ส่งเฉพาะไอเทมในกระเป๋าไป Discord"
     end
     if view.UiChrome then view.UiChrome() end
+    if view.Floor1QuestOrderUi then view.Floor1QuestOrderUi.Update() end
     if previous and setIdentity then setIdentity(previous) end
 end
 
@@ -4742,6 +5540,18 @@ local function queueStatus()
         if not ok then state.LastUiError = tostring(problem) end
     end)
     state.HudThread = hudThread
+end
+
+view.Floor1QuestOrderUi = createFloor1QuestOrderUi(state, currentFloor, normalizeFloor1QuestOrder,
+    function() continuity.Save(state, true) end, queueStatus)
+
+function state.SetQuestAutoPage(open)
+    if not state.Alive or currentFloor ~= 2 then return false end
+    state.QuestAutoPage = open == true
+    if not state.QuestAutoPage then state.SkillPickerOpen = false end
+    questBrowser.ReleaseFocus()
+    updateStatus()
+    return true
 end
 
 function state.ShowSettings(open)
@@ -4904,11 +5714,7 @@ end
 function state.SetEnabled(enabled)
     if not state.Alive then return end
     if not enabled and not continuity.InternalPause then state.AutoResumePending=false state.FloorTravelResumeEnabled=nil end
-    if enabled and currentFloor == 2 and state.Mode == "Quest" then
-        state.Status = "เควสชั้น 2 • ตรวจข้อมูลเท่านั้น ยังไม่เปิดออโต้"
-        updateStatus()
-        return
-    end
+    if enabled and currentFloor == 2 and state.Mode == "Quest" then state.QuestAutoPage = true end
     if enabled and (state.Mode == "Craft" or state.Mode == "Sell" or state.Crafting or state.Selling or state.Travelling or state.FloorTravelling) then return end
     if forgeQuest and state.Mode == "Quest" and state.Enabled ~= (enabled == true) then
         forgeQuest.Reset()
@@ -5223,7 +6029,8 @@ function state.Select(name)
     if state.Mode == "Sell" then state.ToggleSellSelection(name) return end
     if state.Mode == "Craft" and not table.find(crafting.Types, name) then return end
     if state.Mode == "Quest" then
-        if currentFloor ~= 1 or not stoneQuestUiChoices[name] or name == state.SelectedStoneQuest then return end
+        if not stoneQuestUiChoices[name] or name == state.SelectedStoneQuest then return end
+        if currentFloor == 2 then state.QuestAutoPage = true end
         if state.Enabled then state.SetEnabled(false) end
         if forgeQuest then forgeQuest.Reset() end
     end
@@ -5390,7 +6197,7 @@ refreshChoices = function()
         end
         if currentFloor == 1 then counts.CaveSteelFirst = (counts.SteelOre or 0) + (counts.IronOre or 0) end
     end
-    if state.Mode == "Quest" then names.All, names.m_forge, names.m_gallows, names.nepenthesHuntQuest = true, true, true, true end
+    if state.Mode == "Quest" then for id in stoneQuestUiChoices do names[id] = true end end
     if state.Mode == "Craft" and crafting then
         for _, kind in crafting.Types do names[kind] = true end
     end
@@ -5466,9 +6273,9 @@ refreshChoices = function()
         end
         local b = choices[name]
         b.LayoutOrder = i
-        b.Size = UDim2.new(1, -6, 0, state.Mode == "Quest" and 30 or state.Mode == "Sell" and 40 or 34)
-        b.Check.Size = UDim2.fromOffset(22,state.Mode == "Quest" and 30 or 34)
-        b.Title.TextSize = state.Mode == "Quest" and 12 or 13
+        b.Size = UDim2.new(1, -6, 0, state.Mode == "Quest" and (currentFloor == 2 and 22 or 30) or state.Mode == "Sell" and 40 or 34)
+        b.Check.Size = UDim2.fromOffset(22,state.Mode == "Quest" and (currentFloor == 2 and 22 or 30) or 34)
+        b.Title.TextSize = state.Mode == "Quest" and (currentFloor == 2 and 11 or 12) or 13
         local title, detail
         if state.Mode == "Quest" then
             title, detail = stoneQuestChoiceLabel(name), ""
@@ -5486,7 +6293,7 @@ refreshChoices = function()
         if setIdentity then setIdentity(8) end
         b.Text = title .. (detail ~= "" and ("\n" .. detail) or "")
         b.Title.Text, b.Detail.Text, b.Detail.Visible = title, detail, detail ~= ""
-        b.Title.Size = UDim2.new(1, -40, 0, state.Mode == "Quest" and 30 or state.Mode == "Sell" and 21 or 34)
+        b.Title.Size = UDim2.new(1, -40, 0, state.Mode == "Quest" and (currentFloor == 2 and 22 or 30) or state.Mode == "Sell" and 21 or 34)
         b.SelectedBar.Visible = highlighted == true
         b.Check.Text = highlighted and "✓" or state.Mode == "Sell" and "□" or ""
         view.PaintButton(b, highlighted)
@@ -6113,7 +6920,7 @@ local function createGui()
         hide.Position,close.Position = UDim2.fromOffset(414,14),UDim2.fromOffset(444,14)
         view.Main.Position,view.Settings.Position = UDim2.fromOffset(190,64),UDim2.fromOffset(190,64)
         local questFrame = panel:FindFirstChild("QuestBrowser")
-        if questFrame then questFrame.Position = UDim2.fromOffset(190,64) end
+        if questFrame then questFrame.Position = UDim2.fromOffset(190,96) end
         autoRespawnButton.Position = UDim2.fromOffset(190,382)
         view.Keys.Position,view.Keys.Size = UDim2.fromOffset(310,382),UDim2.fromOffset(160,18)
         view.InventoryToast.Position = UDim2.fromOffset(190,378)
@@ -6180,6 +6987,9 @@ local function createGui()
             activity.TextColor3 = (state.Enabled or state.Crafting or state.Selling or state.Travelling) and theme.AccentLight or theme.Muted
         end
     end
+    view.Floor1QuestOrderUi.Mount(view.Main, view.QuestInfo, {
+        Make = make, Text = text, Card = card, Button = button, Connect = connect,
+    }, theme)
     worldController.Mount(panel,nav,{Make=make,Text=text,Card=card,Button=button})
     view.Fit()
     refreshChoices()
@@ -6418,7 +7228,18 @@ local function planRoute(c, root, target)
         state.LastError = "ไม่มีพื้นที่ยืนขุดแร่"
         return
     end
-    if (candidates[1].Position - start).Magnitude > 2200 then
+    local nativeQuestLeg = currentFloor == 2 and state.Mode == "Quest"
+        and (state.QuestPointSource == "Waypoint" or state.QuestPointSource == "QuestMarkers")
+        and target.Name == "EvernightFloor2QuestPoint"
+    local destinationDistance = (candidates[1].Position - start).Magnitude
+    if nativeQuestLeg then
+        state.QuestRoutePlanDistance = destinationDistance
+        state.QuestRoutePlanAt = os.clock()
+        state.PathStatus = "Planning"
+    end
+    -- A long full-map ComputeAsync can outlive the no-progress watchdog after a respawn.
+    -- Use the existing successful 450-stud partial-leg flow for native quest pins.
+    if destinationDistance > (nativeQuestLeg and 600 or 2200) then
         local intermediate = start + (candidates[1].Position - start).Unit * 450
         local params = RaycastParams.new()
         params.FilterType = Enum.RaycastFilterType.Exclude
@@ -6755,10 +7576,12 @@ local function stepForgeQuest(c,h,root)
         state.QuestStepKey=phaseKey
         state.Target=nil
         cancelAction()
+        pcall(combat.Release)
         invalidateRoute()
     end
     state.QuestPhase,state.QuestRemaining=snapshot.Phase,snapshot.Remaining or 0
     state.QuestId,state.QuestTitle=snapshot.QuestId,snapshot.Title
+    state.QuestPointSource=snapshot.PointSource
     state.QuestHave,state.QuestNeed=snapshot.Have,snapshot.Need
     state.QuestGuardRemaining=snapshot.GuardRemaining
     state.Status=snapshot.Status
@@ -6813,6 +7636,9 @@ local function stepForgeQuest(c,h,root)
         stopMovement()
         return false
     end
+    if controls and controls.controlsEnabled~=false then
+        pcall(function()controls:Disable() controlsChanged=true end)
+    end
     local marker=snapshot.Marker
     if not marker then stopMovement() return false end
     local delta=marker.Position-root.Position
@@ -6838,7 +7664,7 @@ local function stepForgeQuest(c,h,root)
         if Vector3.new(guardDelta.X,0,guardDelta.Z).Magnitude>radius or math.abs(guardDelta.Y)>16 then
             state.Target=nil
             navigate(c,h,root,guard,guardDelta.Magnitude,guard)
-            state.Status=snapshot.Phase=="Defend" and "กลับไปป้องกันโรงตีเหล็ก" or "กลับไปยังพื้นที่เควส"
+            state.Status=snapshot.NativePoint and "กำลังเดินตามจุดนำทางของเกม" or snapshot.Phase=="Defend" and "กลับไปป้องกันโรงตีเหล็ก" or "กลับไปยังพื้นที่เควส"
             return false
         end
         local best=chooseTarget(root)
@@ -6848,9 +7674,16 @@ local function stepForgeQuest(c,h,root)
                 state.Target=nil
                 navigate(c,h,root,guard,guardDelta.Magnitude,guard)
                 state.Distance=guardDelta.Magnitude
-                state.Status="เข้าจุดต่อสู้เพื่อเริ่มเควส"
+                state.Status=snapshot.NativePoint and "กำลังเดินตามจุดนำทางของเกม" or "เข้าจุดต่อสู้เพื่อเริ่มเควส"
                 return false
             end
+        end
+        if snapshot.IsNpc and not best and not valid(state.Target) then
+            stopMovement()
+            pcall(combat.Release)
+            pcall(function()setSprint(false)end)
+            state.Status=snapshot.WaitStatus or "รอมอนเควสเกิดใหม่"
+            return false
         end
         if best and best~=state.Target then
             local currentRoot=state.Target and mobRoot(state.Target)
@@ -7189,7 +8022,7 @@ crafting = resolveCrafting()
 selling = resolveSelling()
 freeRespawn = resolveFreeRespawn()
 serviceTravel = resolveServiceTravel()
-forgeQuest = resolveNpcStoneQuest(resolveForgeQuest())
+forgeQuest = currentFloor == 2 and resolveFloor2StoneQuest(resolveForgeQuest()) or resolveNpcStoneQuest(resolveForgeQuest())
 autoSkills = resolveAutoSkills()
 autoPotion = resolveAutoPotion()
 potionController = createAutoPotionController(autoPotion, {
