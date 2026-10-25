@@ -1,3 +1,912 @@
+-- Evernight v2.18: self-contained installer and runner.
+local source=[====[
+-- Persistent preferences and teleport continuation, confined to Project Eternity.
+local continuity = (function()
+-- Standalone constructor. No Roblox state or disk writes occur until an API method is called.
+-- Integrate before state defaults; dependencies may be injected for isolated tests.
+local function createPersistentSettings(options)
+    options = options or {}
+    local userId = tonumber(options.UserId)
+    assert(userId and userId >= 1 and userId == math.floor(userId) and userId < 9007199254740992, "Invalid settings UserId")
+    local encode, decode = options.Encode, options.Decode
+    if type(encode) ~= "function" or type(decode) ~= "function" then
+        local service = game:GetService("HttpService")
+        encode = function(value) return service:JSONEncode(value) end
+        decode = function(value) return service:JSONDecode(value) end
+    end
+    local clockNow = options.Clock or os.clock
+    local fs = options.Fs or {IsFile = isfile, ReadFile = readfile, WriteFile = writefile, MakeFolder = makefolder}
+    local folder = options.Folder or "EvernightControl"
+    assert(type(folder) == "string" and folder:match("^[%w_%-]+$") and #folder <= 64, "Invalid settings folder")
+    local available = type(fs.IsFile) == "function" and type(fs.ReadFile) == "function" and type(fs.WriteFile) == "function"
+    local api = {Available = available, Status = available and "พร้อมจำการตั้งค่า" or "ตัวรันไม่รองรับบันทึกการตั้งค่า",
+        WebhookStatus = "ยังไม่ได้อ่านการตั้งค่า Discord"}
+    local stopped, dirty, dueAt, lastObserved, lastSaved = false, nil, nil, nil, nil
+    local lastWebhookKey = nil
+    local schemaVersion = 1
+    local booleanKeys = {"PersistenceEnabled", "AutoJoinWorld", "AutoResumeFarm", "Enabled", "AutoTownWarp",
+        "AutoRespawn", "AntiAfk", "SkillsEnabled", "AutoPotion", "MenuVisible", "WebhookEnabled"}
+    local modes = {Combat = true, Mining = true, Craft = true, Sell = true, Quest = true}
+    local oreKinds = {CaveSteelFirst = true, SteelOre = true, IronOre = true, CrystalliteOre = true,
+        CrystalliteArea1 = true, CrystalliteArea2 = true}
+    local searches = {"Combat", "Mining", "Craft", "Sell", "Quest", "World"}
+
+    local function finite(value)
+        return type(value) == "number" and value == value and value > -math.huge and value < math.huge
+    end
+    local function safeText(value, maximum, allowEmpty)
+        if type(value) ~= "string" or #value > maximum or (not allowEmpty and #value == 0)
+            or value:find("[%z\1-\31\127]") then return nil end
+        -- Credentials do not belong in public preferences, even if pasted into a search box.
+        local lower = value:lower()
+        if lower:find("discord.com/api/webhooks/", 1, true) or lower:find("discordapp.com/api/webhooks/", 1, true) then return nil end
+        return value
+    end
+    local function booleanMap(value, limit, keyLength)
+        if type(value) ~= "table" then return nil end
+        local result, keys = {}, {}
+        for key, flag in pairs(value) do
+            if type(flag) == "boolean" and safeText(key, keyLength, false) then keys[#keys + 1] = key end
+        end
+        table.sort(keys)
+        for index = 1, math.min(#keys, limit) do result[keys[index]] = value[keys[index]] end
+        return result
+    end
+    local function sanitize(value)
+        if type(value) ~= "table" then return nil end
+        if value.PersistenceEnabled == false then return {PersistenceEnabled = false} end
+        local result = {}
+        for _, key in ipairs(booleanKeys) do if type(value[key]) == "boolean" then result[key] = value[key] end end
+        if modes[value.Mode] then result.Mode = value.Mode end
+        if oreKinds[value.SelectedOre] then result.SelectedOre = value.SelectedOre end
+        for _, key in ipairs({"SelectedMob", "SelectedWeapon", "CraftMaterial"}) do
+            local text = safeText(value[key], 120, false)
+            if text then result[key] = text end
+        end
+        if finite(value.PotionThreshold) then result.PotionThreshold = math.clamp(math.floor(value.PotionThreshold), 1, 99) end
+        if finite(value.CraftQuantity) then result.CraftQuantity = math.clamp(math.floor(value.CraftQuantity), 1, 99) end
+        if finite(value.UiScale) then result.UiScale = math.clamp(value.UiScale, 0.65, 1.1) end
+        if value.LastFloor==1 or value.LastFloor==2 then result.LastFloor=value.LastFloor end
+        result.SkillSelection = booleanMap(value.SkillSelection, 256, 160)
+        result.SellLocks = booleanMap(value.SellLocks, 1000, 100)
+        if type(value.UiSearch) == "table" then
+            result.UiSearch = {}
+            for _, key in ipairs(searches) do
+                local text = safeText(value.UiSearch[key], 240, true)
+                if text then result.UiSearch[key] = text end
+            end
+        end
+        -- Remember preferences for other modes, but never resume a transaction or quest.
+        if result.Mode ~= "Combat" and result.Mode ~= "Mining" then result.Enabled = false end
+        return result
+    end
+    local function validWebhook(value)
+        if type(value) ~= "table" or type(value.Url) ~= "string" or #value.Url > 500 then return nil end
+        local url = value.Url:match("^%s*(.-)%s*$")
+        if not url:match("^https://discord%.com/api/webhooks/%d+/[%w_%-]+$")
+            and not url:match("^https://discordapp%.com/api/webhooks/%d+/[%w_%-]+$") then return nil end
+        return {Url = url, Enabled = value.Enabled == true}
+    end
+    local function canonical(value)
+        local kind = type(value)
+        if kind == "boolean" then return value and "true" or "false" end
+        if kind == "number" then return string.format("%.17g", value) end
+        if kind == "string" then return encode(value) end
+        if kind ~= "table" then return "null" end
+        local keys, pieces = {}, {}
+        for key in pairs(value) do keys[#keys + 1] = key end
+        table.sort(keys)
+        for _, key in ipairs(keys) do pieces[#pieces + 1] = encode(key) .. ":" .. canonical(value[key]) end
+        return "{" .. table.concat(pieces, ",") .. "}"
+    end
+    local function validateProfile(value, schema, cleaner)
+        if type(value) ~= "table" or value.Schema ~= schema or value.Version ~= schemaVersion
+            or value.UserId ~= userId then return nil end
+        local settings = cleaner(value.Settings)
+        if not settings then return nil end
+        local revision = finite(value.Revision) and math.max(0, math.floor(value.Revision)) or 0
+        return {Schema = schema, Version = schemaVersion, UserId = userId, Revision = revision, Settings = settings}
+    end
+    local function makeStore(suffix, schema, cleaner)
+        local path = folder .. "/" .. tostring(userId) .. suffix
+        local store = {Path = path, NeedsRepair = false, FutureVersion = false}
+        local function readOne(candidate)
+            local exists, found = pcall(fs.IsFile, candidate)
+            if not exists or not found then return nil end
+            local readOk, raw = pcall(fs.ReadFile, candidate)
+            if not readOk or type(raw) ~= "string" or #raw > 262144 then return nil end
+            local decoded, value = pcall(decode, raw)
+            if not decoded then return nil end
+            if type(value) == "table" and value.Schema == schema and value.UserId == userId
+                and finite(value.Version) and value.Version > schemaVersion then store.FutureVersion = true end
+            local profile = validateProfile(value, schema, cleaner)
+            if not profile then return nil end
+            return {Profile = profile, Raw = raw, Path = candidate}
+        end
+        function store.Load()
+            if not available then return nil, "Unavailable" end
+            local best
+            store.FutureVersion = false
+            for _, candidate in ipairs({path, path .. ".tmp", path .. ".bak"}) do
+                local found = readOne(candidate)
+                if found and (not best or found.Profile.Revision > best.Profile.Revision) then best = found end
+            end
+            if store.FutureVersion then return nil, "NewerVersion" end
+            store.NeedsRepair = best ~= nil and best.Path ~= path
+            return best and best.Profile or nil, best and best.Path or "Empty", best and best.Raw or nil
+        end
+        function store.Save(settings)
+            if not available then return false, "Unavailable" end
+            local clean = cleaner(settings)
+            if not clean then return false, "Invalid" end
+            local current, reason, previousRaw = store.Load()
+            if reason == "NewerVersion" then return false, reason end
+            local profile = {Schema = schema, Version = schemaVersion, UserId = userId,
+                Revision = (current and current.Revision or 0) + 1, Settings = clean}
+            local encoded, raw = pcall(encode, profile)
+            if not encoded or type(raw) ~= "string" or #raw > 262144 then return false, "Encode" end
+            if type(fs.MakeFolder) == "function" then pcall(fs.MakeFolder, folder) end
+            local wrote = pcall(fs.WriteFile, path .. ".tmp", raw)
+            local checked = wrote and readOne(path .. ".tmp")
+            if not checked or canonical(checked.Profile.Settings) ~= canonical(clean) then return false, "TempVerify" end
+            if previousRaw then
+                local backupOk = pcall(fs.WriteFile, path .. ".bak", previousRaw)
+                local backup = backupOk and readOne(path .. ".bak")
+                if not backup or backup.Raw ~= previousRaw then return false, "BackupVerify" end
+            end
+            local committed = pcall(fs.WriteFile, path, raw)
+            local final = committed and readOne(path)
+            if not final or final.Raw ~= raw then return false, "CommitVerify" end
+            store.NeedsRepair = false
+            return true, profile
+        end
+        return store
+    end
+    local publicStore = makeStore(".settings.json", "EvernightSettings", sanitize)
+    local privateStore = makeStore(".webhook.json", "EvernightWebhook", validWebhook)
+
+    function api.Validate(value)
+        return validateProfile(value, "EvernightSettings", sanitize)
+    end
+    function api.Capture(state)
+        state = type(state) == "table" and state or {}
+        local snapshot = {}
+        for _, key in ipairs(booleanKeys) do snapshot[key] = state[key] end
+        for _, key in ipairs({"Mode", "SelectedMob", "SelectedOre", "SelectedWeapon", "CraftMaterial",
+            "CraftQuantity", "PotionThreshold", "UiScale", "UiSearch", "SkillSelection", "SellLocks", "LastFloor"}) do snapshot[key] = state[key] end
+        -- A cross-floor pause must not overwrite the actual desired farm switch.
+        if type(state.FloorTravelResumeEnabled) == "boolean" then snapshot.Enabled = state.FloorTravelResumeEnabled end
+        return sanitize(snapshot)
+    end
+    function api.Load()
+        local profile, reason = publicStore.Load()
+        if profile then
+            lastSaved = canonical(profile.Settings)
+            api.Status = publicStore.NeedsRepair and "กู้การตั้งค่าจากไฟล์สำรองแล้ว" or "โหลดการตั้งค่าแล้ว"
+        else
+            api.Status = reason == "Unavailable" and "ตัวรันไม่รองรับบันทึกการตั้งค่า"
+                or reason == "NewerVersion" and "ไฟล์ตั้งค่าเป็นรุ่นใหม่กว่า • ยังไม่เขียนทับ" or "ยังไม่มีการตั้งค่าที่บันทึก"
+        end
+        return profile, reason
+    end
+    function api.Save(settings)
+        if stopped then return false, "Stopped" end
+        local clean = sanitize(settings)
+        if not clean then return false, "Invalid" end
+        local key = canonical(clean)
+        if key == lastSaved and not publicStore.NeedsRepair then
+            local current=publicStore.Load()
+            if current and canonical(current.Settings)==key then return true, "Unchanged" end
+        end
+        local ok, result = publicStore.Save(clean)
+        if ok then
+            lastSaved = key
+            api.Status = "บันทึกการตั้งค่าแล้ว"
+        else
+            api.Status = result == "Unavailable" and "ตัวรันไม่รองรับบันทึกการตั้งค่า"
+                or result == "NewerVersion" and "ไฟล์ตั้งค่าเป็นรุ่นใหม่กว่า • ยังไม่เขียนทับ" or "บันทึกไม่สำเร็จ • จะลองใหม่"
+        end
+        return ok, result
+    end
+    function api.CanResume(settings, mode)
+        return type(settings) == "table" and settings.PersistenceEnabled ~= false and settings.AutoResumeFarm ~= false
+            and settings.Enabled == true and (mode == "Combat" or mode == "Mining")
+    end
+    function api.LoadWebhook()
+        local profile, reason = privateStore.Load()
+        if profile then lastWebhookKey = canonical(profile.Settings) end
+        api.WebhookStatus = profile and "โหลดการตั้งค่า Discord แล้ว" or "ยังไม่มีการตั้งค่า Discord ที่บันทึก"
+        return profile and profile.Settings or nil, reason
+    end
+    function api.SaveWebhook(settings)
+        if stopped then return false, "Stopped" end
+        local clean = validWebhook(settings)
+        if not clean then return false, "Invalid" end
+        local key = canonical(clean)
+        if key == lastWebhookKey and not privateStore.NeedsRepair then
+            local current=privateStore.Load()
+            if current and canonical(current.Settings)==key then return true, "Unchanged" end
+        end
+        local ok, reason = privateStore.Save(clean)
+        if ok then lastWebhookKey = key end
+        api.WebhookStatus = ok and "บันทึกการตั้งค่า Discord แล้ว" or "บันทึกการตั้งค่า Discord ไม่สำเร็จ"
+        return ok, ok and "Saved" or reason
+    end
+    function api.Step(state)
+        if stopped then return false, "Stopped" end
+        local snapshot = api.Capture(state)
+        local key = canonical(snapshot)
+        local now = clockNow()
+        if key ~= lastObserved then
+            lastObserved, dirty, dueAt = key, snapshot, now + 1
+        elseif publicStore.NeedsRepair and not dirty then
+            dirty, dueAt = snapshot, now + 1
+        end
+        if dirty and now >= dueAt then
+            local ok, reason = api.Save(dirty)
+            if ok then dirty, dueAt = nil, nil else dueAt = now + 5 end
+            return ok, reason
+        end
+        return true, dirty and "Pending" or "Unchanged"
+    end
+    function api.Stop(state)
+        if stopped then return true, "Stopped" end
+        local ok, reason = true, "Unchanged"
+        if type(state) == "table" then ok, reason = api.Save(api.Capture(state))
+        elseif dirty then ok, reason = api.Save(dirty) end
+        stopped, dirty, dueAt = true, nil, nil
+        return ok, reason
+    end
+    return api
+end
+
+
+    local Players=game:GetService("Players")
+    local localPlayer=Players.LocalPlayer or Players.PlayerAdded:Wait()
+    local globals=getgenv()
+    local store=createPersistentSettings({UserId=localPlayer.UserId})
+    local profile=store.Load()
+    local saved=profile and profile.Settings or {}
+    local api={Store=store,Saved=saved,SourcePath="EvernightControl/main.luau",QueueStatus="ยังไม่ได้เตรียมโหลดต่อ"}
+    local allowed={[13725495850]=true,[108438460215241]=true,[75952228303182]=true,
+        [98460737039314]=true,[13761991508]=true,[76652994877247]=true}
+    api.Allowed=allowed[game.PlaceId]==true
+    api.IsLanding=game.PlaceId==13725495850
+    if api.Allowed then
+-- Shared by landing and world; one engine idle listener and one watchdog.
+do
+-- Pure scheduler; the caller owns one Step worker and one Player.Idled subscription.
+local function createIdleGuard(options)
+    options = options or {}
+    local clockNow, waitFor = options.Clock or os.clock, options.Wait or task.wait
+    local function positive(value, fallback, allowZero)
+        if type(value) ~= "number" or value ~= value or value >= math.huge
+            or (allowZero and value < 0 or not allowZero and value <= 0) then return fallback end
+        return value
+    end
+    local interval = positive(options.Interval, 60, false)
+    local retry = positive(options.Retry, 5, false)
+    local hold = positive(options.Hold, 0.08, true)
+    local minGap = positive(options.MinGap, 20, true)
+    local backends = {}
+    for _, backend in ipairs(type(options.Backends) == "table" and options.Backends or {}) do
+        if type(backend) == "table" and type(backend.Down) == "function" and type(backend.Up) == "function" then
+            backends[#backends + 1] = {Name = tostring(backend.Name or ("Backend " .. (#backends + 1))),
+                Down = backend.Down, Up = backend.Up}
+        end
+    end
+    local initial = positive(options.InitialPulses, 0, true)
+    local metrics = {Attempts = 0, CompletedPairs = math.floor(initial), Failures = 0,
+        Enabled = options.Enabled ~= false, Alive = true, Held = false,
+        NextDue = options.Enabled ~= false and (clockNow() + interval) or nil}
+    local held, busy, releasing, generation, retryNotBefore = nil, false, false, 0, 0
+    local api = {}
+
+    function api.GetStatus()
+        local result = {}
+        for key, value in pairs(metrics) do result[key] = value end
+        result.Held, result.Enabled, result.Alive = held ~= nil, metrics.Enabled, metrics.Alive
+        return result
+    end
+    local function publish()
+        metrics.Held = held ~= nil
+        if type(options.OnUpdate) == "function" then pcall(options.OnUpdate, api.GetStatus()) end
+    end
+    local function failure(label, problem)
+        metrics.Failures = metrics.Failures + 1
+        metrics.Error = label .. ": " .. tostring(problem):sub(1, 220)
+        retryNotBefore = clockNow() + retry
+        metrics.NextDue = retryNotBefore
+    end
+    local function releaseHeld()
+        if not held then return true end
+        if releasing then return false, "ReleaseBusy" end
+        releasing = true
+        local owner = held
+        local ok, result = pcall(owner.Up)
+        releasing = false
+        if ok and result ~= false then
+            if held == owner then held = nil end
+            metrics.LastReleaseAt = clockNow()
+            publish()
+            return true
+        end
+        failure("Release " .. owner.Name, ok and "returned false" or result)
+        publish()
+        return false, "ReleaseFailed"
+    end
+    local function active(token)
+        return metrics.Alive and metrics.Enabled and generation == token
+    end
+    local function finish(ok, reason)
+        busy, metrics.BusySince = false, nil
+        publish()
+        return ok, reason
+    end
+
+    function api.OnIdle(seconds)
+        metrics.LastIdleSeconds = positive(seconds, 0, true)
+        metrics.LastIdledAt = clockNow()
+        if metrics.Alive and metrics.Enabled then
+            local earliest = math.max(clockNow(), retryNotBefore,
+                metrics.LastPulse and metrics.LastPulse + minGap or -math.huge)
+            metrics.NextDue = math.min(metrics.NextDue or earliest, earliest)
+        end
+        publish()
+        return true
+    end
+    function api.SetEnabled(enabled)
+        if not metrics.Alive then return false, "Destroyed" end
+        local on = enabled == true
+        if metrics.Enabled ~= on then
+            local previousDue = metrics.NextDue
+            metrics.Enabled, generation = on, generation + 1
+            if held then
+                metrics.NextDue = math.min(previousDue or clockNow(), clockNow() + retry)
+            else
+                retryNotBefore = 0
+                metrics.NextDue = on and (clockNow() + interval) or nil
+            end
+        end
+        local released = true
+        if not on then released = releaseHeld() end
+        publish()
+        return released
+    end
+    function api.Destroy()
+        metrics.Alive, metrics.Enabled = false, false
+        generation = generation + 1
+        metrics.NextDue = nil
+        -- Always attempt cleanup, including repeated Destroy calls after a failed Up.
+        local released, reason = releaseHeld()
+        publish()
+        return released, reason
+    end
+
+    function api.Step()
+        if busy then return false, "Busy" end
+        local now = clockNow()
+        if held then
+            if metrics.NextDue and now < metrics.NextDue then return false, "ReleaseWaiting" end
+            busy, metrics.BusySince = true, now
+            local released = releaseHeld()
+            if released then
+                retryNotBefore = 0
+                metrics.NextDue = metrics.Alive and metrics.Enabled and math.max(clockNow() + retry,
+                    metrics.LastPulse and metrics.LastPulse + minGap or -math.huge) or nil
+            end
+            -- Cleanup-only step: a new backend is never used during an owned-release retry.
+            return finish(released, released and "Released" or "ReleaseFailed")
+        end
+        if not metrics.Alive then return false, "Destroyed" end
+        if not metrics.Enabled then return false, "Disabled" end
+        local earliest = math.max(metrics.NextDue or now, retryNotBefore,
+            metrics.LastPulse and metrics.LastPulse + minGap or -math.huge)
+        if now < earliest then return false, "Waiting" end
+        busy, metrics.BusySince = true, now
+        local token = generation
+        if #backends == 0 then
+            failure("Input", "no supported backend")
+            return finish(false, "NoBackend")
+        end
+        for _, backend in ipairs(backends) do
+            if not active(token) then return finish(false, "Cancelled") end
+            -- Ownership is recorded BEFORE Down, including a partially successful throwing Down.
+            held, metrics.Backend = backend, backend.Name
+            metrics.Attempts = metrics.Attempts + 1
+            publish()
+            if not active(token) or held ~= backend then
+                releaseHeld()
+                return finish(false, "Cancelled")
+            end
+            local downOk, downResult = pcall(backend.Down)
+            local downSucceeded = downOk and downResult ~= false
+            if not downSucceeded then
+                failure("Down " .. backend.Name, downOk and "returned false" or downResult)
+                local released = releaseHeld()
+                if not released then return finish(false, "ReleaseFailed") end
+                if not active(token) then return finish(false, "Cancelled") end
+                -- Fall through only after a failed Down has been completely released.
+            else
+                if not active(token) then
+                    releaseHeld()
+                    return finish(false, "Cancelled")
+                end
+                local waited, waitProblem = pcall(waitFor, hold)
+                if not waited then failure("Hold " .. backend.Name, waitProblem) end
+                local released = releaseHeld()
+                if not released then return finish(false, "ReleaseFailed") end
+                if not active(token) then return finish(false, "Cancelled") end
+                if not waited then return finish(false, "HoldFailed") end
+                metrics.CompletedPairs = metrics.CompletedPairs + 1
+                metrics.LastPulse, metrics.Error = clockNow(), nil
+                retryNotBefore = 0
+                metrics.NextDue = metrics.LastPulse + interval
+                return finish(true, "Completed")
+            end
+        end
+        metrics.NextDue = math.max(clockNow() + retry, retryNotBefore)
+        return finish(false, "DownFailed")
+    end
+    publish()
+    return api
+end
+
+
+    local oldSession=globals.EvernightIdleSession
+    if oldSession and type(oldSession.Destroy)=="function" then pcall(oldSession.Destroy) end
+    local input=game:GetService("UserInputService")
+    local actions=game:GetService("ContextActionService")
+    local modernOk,modern=pcall(input.CreateVirtualInput,input)
+    if not modernOk then modern=nil end
+    local legacyOk,legacy=pcall(game.GetService,game,"VirtualInputManager")
+    if not legacyOk then legacy=nil end
+    local session={StartedAt=os.clock(),Connections={},OtherInputs=0,LastOtherInput=-math.huge,PreferLegacy=false,EngineIdleEvents=0}
+    local function safeKey()
+        local before=(getthreadidentity and getthreadidentity()) or 8
+        if setthreadidentity then setthreadidentity(2) end
+        local binds
+        pcall(function()
+            local client=localPlayer.PlayerScripts:FindFirstChild("Client")
+            local m=client and client:FindFirstChild("Keybinds")
+            if m then binds=require(m) end
+        end)
+        local casOk,cas=pcall(actions.GetAllBoundActionInfo,actions)
+        if not casOk then
+            if setthreadidentity then setthreadidentity(before) end
+            error(cas)
+        end
+        local found
+        for _,key in {Enum.KeyCode.F15,Enum.KeyCode.F14,Enum.KeyCode.F13} do
+            local bound=false
+            if binds and type(binds.boundTo)=="function" then
+                local ok,value=pcall(binds.boundTo,key)
+                if not ok or value then bound=true end
+            end
+            for _,info in cas do for _,item in info.inputTypes or {} do if item==key then bound=true end end end
+            if not bound then found=key break end
+        end
+        if setthreadidentity then setthreadidentity(before) end
+        if not found then error("No unused function key available") end
+        return found
+    end
+    local backends={}
+    if modern then
+        local heldKey
+        table.insert(backends,{Name="VirtualInput",Down=function()
+            if session.PreferLegacy then error("Trying alternate input after engine idle telemetry") end
+            heldKey=safeKey()
+            modern:SendKey(true,heldKey,false)
+        end,Up=function()
+            if not heldKey then return true end
+            local ok,problem=pcall(modern.SendKey,modern,false,heldKey,false)
+            if not ok and legacy then ok,problem=pcall(legacy.SendKeyEvent,legacy,false,heldKey,false,game) end
+            if not ok then error(problem) end
+            heldKey=nil
+            return true
+        end})
+    end
+    if legacy then
+        local heldKey
+        table.insert(backends,{Name="VirtualInputManager",Down=function()
+            heldKey=safeKey()
+            legacy:SendKeyEvent(true,heldKey,false,game)
+        end,Up=function()
+            if not heldKey then return true end
+            local ok,problem=pcall(legacy.SendKeyEvent,legacy,false,heldKey,false,game)
+            if not ok and modern then ok,problem=pcall(modern.SendKey,modern,false,heldKey,false) end
+            if not ok then error(problem) end
+            heldKey=nil
+            return true
+        end})
+    end
+    local live=globals.EternityAutoFarm
+    local initial=live and live.Alive and live.AntiAfkPulses or 0
+    local guard=createIdleGuard({Backends=backends,Enabled=saved.AntiAfk~=false,InitialPulses=initial,
+        Interval=60,Retry=5,Hold=0.08,MinGap=20})
+    session.Guard,api.IdleGuard=guard,guard
+    api.IdleSession=session
+    function api.SyncIdle(state)
+        local metrics=guard.GetStatus()
+        state.AntiAfkPulses,state.AntiAfkError=metrics.CompletedPairs,metrics.Error
+        state.AntiAfkLastPulse,state.AntiAfkLastIdleSeconds=metrics.LastPulse,metrics.LastIdleSeconds
+        state.AntiAfkBusy=metrics.Held or metrics.BusySince~=nil
+        return metrics
+    end
+    function session.Destroy()
+        session.Stopped=true
+        for _,connection in session.Connections do pcall(function()connection:Disconnect()end) end
+        return guard.Destroy()
+    end
+    local function idle(seconds)
+        session.EngineIdleEvents+=1
+        session.LastEngineIdleSeconds=seconds
+        local metrics=guard.GetStatus()
+        if type(seconds)=="number" and seconds>=180 and metrics.LastPulse
+            and os.clock()-metrics.LastPulse<90 and os.clock()-session.StartedAt>=180 then
+            session.PreferLegacy=true
+        end
+        guard.OnIdle(seconds)
+    end
+    session.Connection=localPlayer.Idled:Connect(idle)
+    table.insert(session.Connections,session.Connection)
+    local function otherInput(object)
+        local key=object.KeyCode
+        if key~=Enum.KeyCode.F15 and key~=Enum.KeyCode.F14 and key~=Enum.KeyCode.F13 then
+            session.OtherInputs+=1
+            session.LastOtherInput=os.clock()
+        end
+    end
+    table.insert(session.Connections,input.InputBegan:Connect(otherInput))
+    table.insert(session.Connections,input.InputChanged:Connect(function(object)
+        if object.UserInputType==Enum.UserInputType.MouseMovement and object.Delta.Magnitude>0 then otherInput(object) end
+    end))
+    session.Worker=task.spawn(function()
+        while not session.Stopped or guard.GetStatus().Held do
+            if setthreadidentity then setthreadidentity(8) end
+            local previousHeld=oldSession and oldSession.Guard and oldSession.Guard.GetStatus().Held
+            if previousHeld then pcall(oldSession.Guard.Step)
+            else
+                local metrics=guard.GetStatus()
+                if metrics.Held or os.clock()-session.LastOtherInput>=45 then pcall(guard.Step) end
+            end
+            local state=api.WorldState or globals.EvernightLanding
+            if state and state.Alive then api.SyncIdle(state) end
+            task.wait(1)
+        end
+    end)
+    globals.EvernightIdleSession=session
+end
+
+end
+    function api.Apply(settings)
+        if saved.PersistenceEnabled~=false then
+            for key,value in saved do if settings[key]==nil then settings[key]=value end end
+            if settings.Webhook==nil then settings.Webhook=store.LoadWebhook() end
+        elseif settings.PersistenceEnabled==nil then settings.PersistenceEnabled=false end
+        return settings
+    end
+    function api.Queue()
+        if globals.EvernightContinuationQueued then api.QueueStatus="พร้อมโหลดต่อหลังย้ายชั้น";return true end
+        local queue=queue_on_teleport or queueonteleport or (syn and syn.queue_on_teleport)
+        if type(queue)~="function" or type(isfile)~="function" or not isfile(api.SourcePath) then
+            api.QueueStatus="ต้องรันสคริปต์ใหม่หลังย้ายชั้น";return false
+        end
+        local ok=pcall(queue,[=[
+            task.spawn(function()
+                if not game:IsLoaded() then game.Loaded:Wait() end
+                local allowed={[13725495850]=true,[108438460215241]=true,[75952228303182]=true,
+                    [98460737039314]=true,[13761991508]=true,[76652994877247]=true}
+                if not allowed[game.PlaceId] or getgenv().EvernightContinuationBooted then return end
+                getgenv().EvernightContinuationBooted=true
+                local ok,problem=pcall(function()
+                    local source=readfile("EvernightControl/main.luau")
+                    local chunk,why=loadstring(source)
+                    if not chunk then error(why) end
+                    chunk()
+                end)
+                if not ok then getgenv().EvernightContinuationError=tostring(problem) end
+            end)
+        ]=])
+        if ok then globals.EvernightContinuationQueued=true end
+        api.QueueStatus=ok and "พร้อมโหลดต่อหลังย้ายชั้น" or "เตรียมโหลดต่อไม่สำเร็จ"
+        return ok
+    end
+    function api.Save(state,immediate)
+        local ok,why
+        if immediate then ok,why=store.Save(store.Capture(state)) else ok,why=store.Step(state) end
+        state.PersistenceStatus=store.Status
+        if state.PersistenceEnabled~=false and type(state.GetWebhookSettings)=="function" then
+            local got,settings=pcall(state.GetWebhookSettings)
+            if got and settings and settings.Url then store.SaveWebhook(settings) end
+        end
+        return ok,why
+    end
+    function api.Stop(state)
+        api.Save(state,true)
+        return store.Stop(state)
+    end
+    function api.StartLanding()
+        -- Preparation only: nativeLandingStep does not continue, select a slot, or teleport.
+-- The caller explicitly invokes the returned Action under normal script identity.
+-- Sources: SAOMainMenu.Controller.Get/Continue, Bridge.startGame/quickJoin,
+-- ReplicatedStorage.Client.teleportToFloor. All instance paths are native.
+local function nativeLandingStep(preferredFloor)
+    local Players = game:GetService("Players")
+    local ReplicatedStorage = game:GetService("ReplicatedStorage")
+    local player = Players.LocalPlayer
+    local function result(phase, reason, details)
+        local value = details or {}
+        value.Phase = phase
+        value.Reason = reason
+        value.Ready = value.Action ~= nil
+        return value
+    end
+
+    if game.PlaceId ~= 13725495850 then
+        return result("not_landing", "The native landing menu is not active in this place.")
+    end
+    local requested = preferredFloor ~= nil and tonumber(preferredFloor) or nil
+    if preferredFloor ~= nil and requested ~= 1 and requested ~= 2 then
+        return result("invalid_floor", "Choose Floor 1 or Floor 2.")
+    end
+
+    local playerGui = player and player:FindFirstChildOfClass("PlayerGui")
+    local gui = playerGui and playerGui:FindFirstChild("SAOMainMenu")
+    local controllerModule = gui and gui:FindFirstChild("Controller")
+    local client = ReplicatedStorage:FindFirstChild("Client")
+    local storeModule = client and client:FindFirstChild("Store")
+    local teleportModule = client and client:FindFirstChild("teleportToFloor")
+    if not gui or not controllerModule or not storeModule or not teleportModule then
+        return result("loading", "Waiting for the native landing modules.")
+    end
+    if not gui.Enabled then
+        return result("loading", "Waiting for the native landing menu to become visible.")
+    end
+
+    local controllerOk, controllerLibrary = pcall(require, controllerModule)
+    if not controllerOk or type(controllerLibrary) ~= "table" or type(controllerLibrary.Get) ~= "function" then
+        return result("loading", "The native landing controller is not available.")
+    end
+    local controller = controllerLibrary.Get(gui)
+    if not controller or type(controller.GetState) ~= "function" or type(controller.GetCharacter) ~= "function"
+        or type(controller.Continue) ~= "function" then
+        return result("loading", "Waiting for the existing native menu controller.")
+    end
+
+    local function readExisting()
+        local view = controller.GetState()
+        if type(view) ~= "table" or type(view.Slot) ~= "number" then
+            return nil, nil, "Waiting for the current character slot."
+        end
+        local character = controller.GetCharacter(view.Slot)
+        if type(character) ~= "table" then
+            return view, nil, "The selected character slot is not available."
+        end
+        if character.Locked then
+            return view, nil, "The selected character slot is locked."
+        end
+        if character.Status ~= "ready" then
+            return view, nil, "The selected character slot is not ready: " .. tostring(character.Status or "loading") .. "."
+        end
+        if type(character.Look) ~= "table" then
+            return view, nil, "The selected slot has no existing character."
+        end
+        local characters = gui:FindFirstChild("Characters")
+        local slotObject = characters and characters:FindFirstChild("Slot" .. tostring(view.Slot))
+        if slotObject then
+            local occupiedValue = slotObject:FindFirstChild("Occupied")
+            if slotObject:GetAttribute("Occupied") == false
+                or (occupiedValue and occupiedValue:IsA("BoolValue") and not occupiedValue.Value) then
+                return view, nil, "The selected slot is empty; character creation requires manual input."
+            end
+        end
+        return view, character
+    end
+
+    local view, character, characterReason = readExisting()
+    if not character then
+        return result("character_unavailable", characterReason, {Slot = view and view.Slot})
+    end
+    local slot = view.Slot
+    if view.Busy then
+        return result("busy", "The native landing menu is changing screens.", {Slot = slot})
+    end
+    if view.Page == "Customize" or view.EditingSlot ~= nil then
+        return result("manual_customization", "Finish or cancel customization manually before entering the world.", {Slot = slot})
+    end
+
+    local function loadedData()
+        local storeOk, store = pcall(require, storeModule)
+        if not storeOk or type(store) ~= "table" or type(store.getState) ~= "function" then
+            return nil
+        end
+        local data = store:getState().playerData
+        if player:GetAttribute("SelectedSlot") ~= slot or type(data) ~= "table"
+            or not data.appearance or not data.progression then
+            return nil
+        end
+        return data
+    end
+
+    if view.Modal == "ServerSelection" then
+        local data = loadedData()
+        if not data then
+            return result("loading_slot", "Waiting for the selected character save to finish loading.", {Slot = slot})
+        end
+        if data.progression.freshSlot then
+            return result("manual_customization", "This save still requires character setup; automatic entry is paused.", {Slot = slot})
+        end
+        local floor = requested or tonumber(data.floors and data.floors.last) or 1
+        if floor ~= 1 and floor ~= 2 then
+            return result("invalid_floor", "The saved floor is not available in the native landing menu.", {Slot = slot})
+        end
+        if slot == 4 and floor ~= 1 then
+            return result("floor_locked", "The native menu limits the Perma Death slot to Floor 1.", {Slot = slot, Floor = floor})
+        end
+        local highest = tonumber(data.floors and data.floors.highest)
+        if highest and floor > highest then
+            return result("floor_locked", "This character has not unlocked the requested floor.", {Slot = slot, Floor = floor})
+        end
+        local teleportOk, nativeTeleportToFloor = pcall(require, teleportModule)
+        if not teleportOk or type(nativeTeleportToFloor) ~= "function" then
+            return result("loading", "The native quick join function is not available.", {Slot = slot, Floor = floor})
+        end
+        return result("join", "The existing character is ready for native quick join.", {
+            Slot = slot,
+            Floor = floor,
+            ActionKind = "quick_join",
+            Action = function()
+                local current, existing = readExisting()
+                local currentData = loadedData()
+                if not gui.Parent or not gui.Enabled or not existing or current.Slot ~= slot
+                    or current.Busy or current.Modal ~= "ServerSelection" or current.Page == "Customize"
+                    or not currentData or currentData.progression.freshSlot then
+                    return false, "The native landing state changed before quick join."
+                end
+                return nativeTeleportToFloor(floor)
+            end,
+        })
+    end
+
+    if view.Modal ~= nil then
+        return result("modal_open", "Close the current native menu dialog before entering the world.", {Slot = slot})
+    end
+    if view.Page ~= "Home" and view.Page ~= "Slots" then
+        return result("not_home", "Return to the native Home or Slots screen before entering the world.", {Slot = slot})
+    end
+    local data = loadedData()
+    if data and data.progression.freshSlot then
+        return result("manual_customization", "This save still requires character setup; automatic entry is paused.", {Slot = slot})
+    end
+    return result("continue", "The selected slot contains an existing character.", {
+        Slot = slot,
+        ActionKind = "continue",
+        Action = function()
+            local current, existing = readExisting()
+            local currentData = loadedData()
+            if not gui.Parent or not gui.Enabled or not existing or current.Slot ~= slot or current.Busy
+                or current.Modal ~= nil or current.EditingSlot ~= nil
+                or (current.Page ~= "Home" and current.Page ~= "Slots")
+                or (currentData and currentData.progression.freshSlot) then
+                return false, "The selected existing character is no longer ready to continue."
+            end
+            controller.Continue()
+            return true
+        end,
+    })
+end
+
+        local old=globals.EvernightLanding
+        if old then
+            old.Alive=false
+            for _,connection in old.Connections or {} do pcall(function()connection:Disconnect()end) end
+            if old.Gui then pcall(function()old.Gui:Destroy()end) end
+        end
+        local state={Alive=true,AutoJoinWorld=saved.AutoJoinWorld~=false,Status="กำลังรอหน้าเข้าโลก",Actions=0,Connections={}}
+        globals.EvernightLanding=state
+        api.Queue()
+        local root=localPlayer:WaitForChild("PlayerGui")
+        if type(gethui)=="function" then local ok,value=pcall(gethui) if ok and typeof(value)=="Instance" then root=value end end
+        local gui=Instance.new("ScreenGui")
+        gui.Name,gui.ResetOnSpawn,gui.DisplayOrder="EvernightLandingStatus",false,1000
+        gui.Parent=root
+        state.Gui=gui
+        local card=Instance.new("Frame")
+        card.Size,card.Position=UDim2.fromOffset(320,104),UDim2.new(1,-340,0,20)
+        card.BackgroundColor3,card.BorderSizePixel=Color3.fromRGB(22,16,32),0
+        card.Parent=gui
+        local corner=Instance.new("UICorner") corner.CornerRadius=UDim.new(0,10) corner.Parent=card
+        local stroke=Instance.new("UIStroke") stroke.Color,stroke.Transparency=Color3.fromRGB(187,48,91),0.2 stroke.Parent=card
+        local function label(value,x,y,w,h,size,color)
+            local l=Instance.new("TextLabel")
+            l.BackgroundTransparency,l.Text=1,value
+            l.Position,l.Size=UDim2.fromOffset(x,y),UDim2.fromOffset(w,h)
+            l.Font,l.TextSize,l.TextColor3=Enum.Font.Gotham,size,color
+            l.TextXAlignment,l.TextWrapped=Enum.TextXAlignment.Left,true
+            l.Parent=card
+            return l
+        end
+        label("EVERNIGHT  /  เข้าโลกอัตโนมัติ",12,7,296,22,12,Color3.fromRGB(246,155,188)).Font=Enum.Font.GothamBold
+        local status=label("",12,31,296,34,11,Color3.fromRGB(211,203,247))
+        label("ใช้ตัวละครเดิมที่เลือกไว้",12,74,204,18,10,Color3.fromRGB(167,148,182))
+        local toggle=Instance.new("TextButton")
+        toggle.Name,toggle.Position,toggle.Size="ToggleAutoJoin",UDim2.fromOffset(226,72),UDim2.fromOffset(82,24)
+        toggle.BackgroundColor3,toggle.TextColor3=Color3.fromRGB(77,29,57),Color3.fromRGB(245,236,248)
+        toggle.BorderSizePixel,toggle.Font,toggle.TextSize=0,Enum.Font.Gotham,11
+        toggle.Parent=card
+        local buttonCorner=Instance.new("UICorner") buttonCorner.CornerRadius=UDim.new(0,6) buttonCorner.Parent=toggle
+        local sent={}
+        local startedAt=os.clock()
+        local nextActionAt=0
+        local phaseText={loading="รอเมนูเกมโหลด",character_unavailable="รอตัวละครเดิมพร้อมใช้งาน",
+            busy="กำลังโหลดข้อมูลตัวละคร",manual_customization="กรุณาตั้งค่าตัวละครในเกมให้เสร็จก่อน",
+            loading_slot="กำลังโหลดข้อมูลตัวละคร",invalid_floor="ชั้นที่เลือกยังใช้ไม่ได้",floor_locked="ตัวละครยังไปชั้นนี้ไม่ได้",
+            join="ตัวละครพร้อม • กำลังเข้าโลก",continue="กำลังเลือกตัวละครเดิม",modal_open="รอหน้าต่างเกมปิด",
+            not_home="รอกลับหน้าเลือกตัวละคร",not_landing="รอหน้าเข้าโลก"}
+        toggle.Activated:Connect(function()
+            state.AutoJoinWorld=not state.AutoJoinWorld
+            local preferences=table.clone(saved)
+            preferences.AutoJoinWorld=state.AutoJoinWorld
+            if preferences.PersistenceEnabled~=false then store.Save(preferences) end
+            if state.AutoJoinWorld then sent={} startedAt=os.clock() end
+        end)
+        table.insert(state.Connections,localPlayer.OnTeleport:Connect(function(phase)
+            if phase==Enum.TeleportState.Started or phase==Enum.TeleportState.InProgress or phase==Enum.TeleportState.WaitingForServer then
+                state.TeleportStarted=true
+                state.Status="กำลังเข้าโลก • รอเกมโหลด"
+                api.Queue()
+            end
+        end))
+        table.insert(state.Connections,game:GetService("TeleportService").TeleportInitFailed:Connect(function(who)
+            if who==localPlayer then
+                state.TeleportStarted=false
+                state.Status="เข้าโลกไม่สำเร็จ • จะลองใหม่"
+                if state.Actions<3 then sent={} startedAt=os.clock()+3 end
+            end
+        end))
+        task.spawn(function()
+            while state.Alive and gui.Parent do
+                if setthreadidentity then setthreadidentity(8) end
+                if not state.AutoJoinWorld then state.Status="ปิดเข้าโลกอัตโนมัติ"
+                elseif not state.TeleportStarted then
+                    local previous=(getthreadidentity and getthreadidentity()) or 8
+                    if setthreadidentity then setthreadidentity(2) end
+                    local ok,probe=pcall(nativeLandingStep,saved.LastFloor)
+                    if setthreadidentity then setthreadidentity(previous) end
+                    if not ok then state.Status="รอข้อมูลหน้าเข้าโลก" state.Error=tostring(probe)
+                    else
+                        state.Phase=probe.Phase
+                        state.Status=phaseText[probe.Phase] or "กำลังรอข้อมูล"
+                        state.Reason=probe.Reason
+                        local key=tostring(probe.Phase)..":"..tostring(probe.Slot)..":"..tostring(probe.Floor)
+                        if os.clock()-startedAt<3 then state.Status="เข้าโลกอัตโนมัติใน "..math.max(1,math.ceil(3-os.clock()+startedAt)).." วินาที" end
+                        if probe.Action and not sent[key] and state.Actions<6 and os.clock()-startedAt>=3 and os.clock()>=nextActionAt then
+                            sent[key],state.Actions=true,state.Actions+1
+                            if setthreadidentity then setthreadidentity(2) end
+                            local acted,accepted,problem=pcall(probe.Action)
+                            if setthreadidentity then setthreadidentity(previous) end
+                            if not acted or accepted==false then
+                                sent[key]=nil nextActionAt=os.clock()+3
+                                state.Error=tostring(not acted and accepted or problem)
+                                state.Status="รอข้อมูลใหม่ก่อนเข้าโลก"
+                            end
+                        end
+                    end
+                end
+                if setthreadidentity then setthreadidentity(8) end
+                status.Text=state.Status
+                toggle.Text=state.AutoJoinWorld and "ปิดออโต้" or "เปิดออโต้"
+                task.wait(0.5)
+            end
+        end)
+        return state
+    end
+    return api
+end)()
+if not continuity.Allowed then return end
+if continuity.IsLanding then return continuity.StartLanding() end
+
 -- Project Eternity: selectable monster farming and ore mining.
 -- F6: combat. F7: mining. Right Shift: menu and cursor.
 local env = getgenv()
@@ -8,7 +917,7 @@ end
 local previousSettings = {}
 if env.EternityAutoFarm and env.EternityAutoFarm.Alive then
     local old = env.EternityAutoFarm
-    previousSettings = {Mode = old.Mode, SelectedMob = old.SelectedMob, SelectedOre = old.SelectedOre,
+    previousSettings = {Enabled=old.Enabled, PersistenceEnabled=old.PersistenceEnabled, AutoJoinWorld=old.AutoJoinWorld, AutoResumeFarm=old.AutoResumeFarm, Mode = old.Mode, SelectedMob = old.SelectedMob, SelectedOre = old.SelectedOre,
         AutoTownWarp = old.AutoTownWarp, MenuVisible = old.MenuVisible, Version = old.Version,
         SelectedWeapon = old.SelectedWeapon, CraftMaterial = old.CraftMaterial, CraftQuantity = old.CraftQuantity,
         CraftedCount = old.CraftedCount, LastCraft = old.LastCraft,
@@ -25,9 +934,10 @@ if env.EternityAutoFarm and env.EternityAutoFarm.Alive then
         if ok then previousSettings.Webhook = settings end
     end
 end
+continuity.Apply(previousSettings)
 local inheritedRestores = {}
 for _, old in filtergc("table", {Keys = {"Alive", "Enabled", "Selected", "SetEnabled", "Destroy"}}, false) do
-    if old.Version == "1.0" or old.Version == "1.1" or old.Version == "1.2" or old.Version == "1.3" or old.Version == "1.4" or old.Version == "1.5" or old.Version == "1.6" or old.Version == "1.7" or old.Version == "1.8" or old.Version == "1.9" or old.Version == "2.0" or old.Version == "2.1" or old.Version == "2.2" or old.Version == "2.3" or old.Version == "2.4" or old.Version == "2.5" or old.Version == "2.6" or old.Version == "2.7" or old.Version == "2.8" or old.Version == "2.9" or old.Version == "2.10" or old.Version == "2.11" or old.Version == "2.12" or old.Version == "2.13" or old.Version == "2.14" or old.Version == "2.15" then
+    if old.Version == "2.18" or old.Version == "2.17" or old.Version == "2.16" or old.Version == "1.0" or old.Version == "1.1" or old.Version == "1.2" or old.Version == "1.3" or old.Version == "1.4" or old.Version == "1.5" or old.Version == "1.6" or old.Version == "1.7" or old.Version == "1.8" or old.Version == "1.9" or old.Version == "2.0" or old.Version == "2.1" or old.Version == "2.2" or old.Version == "2.3" or old.Version == "2.4" or old.Version == "2.5" or old.Version == "2.6" or old.Version == "2.7" or old.Version == "2.8" or old.Version == "2.9" or old.Version == "2.10" or old.Version == "2.11" or old.Version == "2.12" or old.Version == "2.13" or old.Version == "2.14" or old.Version == "2.15" then
         local cleanup = task.spawn(function() pcall(old.Destroy) end)
         if old.RestoringEquipment then table.insert(inheritedRestores, old) end
         old.Enabled, old.Alive = false, false
@@ -64,7 +974,9 @@ local state = {
     AutoTownWarp = previousSettings.AutoTownWarp ~= false, Warps = 0,
     Status = "พร้อมใช้งาน", Target = nil, Distance = 0,
     Attacks = 0, Kills = 0, DamageObserved = 0, PathStatus = "idle", LastError = nil,
-    MenuVisible = true, Version = "2.15", Connections = {},
+    MenuVisible = true, Version = "2.18", Connections = {},
+    PersistenceEnabled=previousSettings.PersistenceEnabled~=false, AutoJoinWorld=previousSettings.AutoJoinWorld~=false, AutoResumeFarm=previousSettings.AutoResumeFarm~=false,
+    LastFloor=currentFloor, WorldOpen=false, FloorTravelling=false, PersistenceStatus=continuity.Store.Status,
     SettingsOpen = false, MaterialPickerOpen = false, UiScale = previousSettings.UiScale or 1,
     UiSearch = previousSettings.UiSearch or {Combat = "", Mining = "", Craft = "", Sell = ""},
     Travelling = false, TravelStatus = "", TravelDistance = 0,
@@ -90,6 +1002,8 @@ local state = {
     LastSale = previousSettings.LastSale, SellStatus = "ติ๊กเลือกหลายชิ้น แล้วขายใกล้พ่อค้า",
 }
 env.EternityAutoFarm = state
+continuity.WorldState=state
+continuity.IdleGuard.SetEnabled(state.AntiAfk)
 state.SellSearch = state.UiSearch.Sell or ""
 local gui, panel, reopen, statusLabel, startButton, selectedLabel, list, combatTab, miningTab, craftTab, sellTab, warpButton
 local craftControls, craftMaterialButton, craftQuantityBox, craftCapacityLabel
@@ -98,6 +1012,7 @@ local webhookBox, webhookToggle, webhookLabel
 local autoRespawnButton
 local view = {}
 local questBrowser
+local worldController
 local theme = {
     Background = Color3.fromRGB(17, 12, 25), Surface = Color3.fromRGB(32, 23, 43), Inset = Color3.fromRGB(22, 16, 32),
     Border = Color3.fromRGB(76, 46, 74), Accent = Color3.fromRGB(187, 48, 91), AccentLight = Color3.fromRGB(246, 155, 188),
@@ -3185,10 +4100,11 @@ local function updateStatus()
     autoRespawnButton.TextColor3 = state.AutoRespawn and theme.Frost or theme.Muted
     view.RespawnSettings.Text = state.AutoRespawn and "เปิดอยู่" or "ปิดอยู่"
     view.PaintButton(view.RespawnSettings, state.AutoRespawn)
+    continuity.SyncIdle(state)
     view.AntiAfkToggle.Text = state.AntiAfk and "เปิดอยู่" or "ปิดอยู่"
     view.PaintButton(view.AntiAfkToggle, state.AntiAfk)
     view.AntiAfkStatus.Text = not state.AntiAfk and "ปิดการกัน AFK แล้ว" or state.AntiAfkError and "ส่งสัญญาณไม่สำเร็จ"
-        or state.AntiAfkPulses > 0 and ("ส่งสัญญาณแล้ว " .. state.AntiAfkPulses .. " ครั้ง") or "รอเมื่อไม่มีการใช้งาน"
+        or state.AntiAfkPulses > 0 and ("ส่งสัญญาณแล้ว " .. state.AntiAfkPulses .. " ครั้ง") or "ตรวจทุก 60 วินาที"
     view.SizeButton.Text = "ขนาด " .. math.floor((view.Scale.Scale or 1)*100+0.5) .. "%"
     view.AutoPotionToggle.Text = state.AutoPotion and "เปิดอยู่" or "ปิดอยู่"
     view.PaintButton(view.AutoPotionToggle,state.AutoPotion)
@@ -3221,6 +4137,7 @@ local function updateStatus()
         autoRespawnButton.Visible,view.Keys.Visible = not view.InventoryToast.Visible,not view.InventoryToast.Visible
         view.InventoryNoticeText.Text = state.InventoryWebhookStatus or "ส่งเฉพาะไอเทมในกระเป๋าไป Discord"
     end
+    if view.UiChrome then view.UiChrome() end
     if previous and setIdentity then setIdentity(previous) end
 end
 
@@ -3238,6 +4155,7 @@ local function queueStatus()
 end
 
 function state.ShowSettings(open)
+    state.WorldOpen=false
     state.SettingsOpen, state.MaterialPickerOpen, state.SkillPickerOpen = open == true, false, false
     if state.SettingsOpen and view.Search then view.Search:ReleaseFocus(false) end
     if state.SettingsOpen then questBrowser.ReleaseFocus() end
@@ -3272,36 +4190,29 @@ function state.SetSkillsEnabled(enabled)
     updateStatus()
 end
 
--- Anti-AFK: one Player event subscription, independent of character lifetime.
-do
-    local virtualUser = game:GetService("VirtualUser")
-    local lastPulse = -math.huge
-    function state.SetAntiAfk(enabled)
-        if not state.Alive then return end
-        state.AntiAfk, state.AntiAfkError = enabled == true, nil
-        queueStatus()
-    end
-    function state.HandleIdle()
-        if not state.Alive or not state.AntiAfk or state.AntiAfkBusy then return false end
-        local now = os.clock()
-        if now - lastPulse < 30 then return false end
-        local camera = workspace.CurrentCamera
-        if not camera then return false end
-        lastPulse, state.AntiAfkBusy = now, true
-        local ok, problem = pcall(function()
-            virtualUser:CaptureController()
-            -- A complete right click avoids leaving a held key or mouse button.
-            virtualUser:ClickButton2(Vector2.new(0,0), camera.CFrame)
-        end)
-        state.AntiAfkBusy = false
-        state.AntiAfkError = not ok and tostring(problem) or nil
-        if ok then
-            state.AntiAfkPulses += 1
-            state.AntiAfkLastPulse = now
-        end
-        queueStatus()
-        return ok
-    end
+-- Shared anti-idle watchdog: independent of farming, character and camera lifetime.
+function state.SetAntiAfk(enabled)
+    if not state.Alive then return end
+    state.AntiAfk=enabled==true
+    continuity.IdleGuard.SetEnabled(state.AntiAfk)
+    continuity.SyncIdle(state)
+    continuity.Save(state,true)
+    queueStatus()
+end
+function state.HandleIdle(seconds)
+    return continuity.IdleGuard.OnIdle(seconds)
+end
+function state.GetAntiAfkStatus()
+    local metrics=continuity.SyncIdle(state)
+    metrics.Connection=continuity.IdleSession.Connection.Connected
+    metrics.OtherInputs=continuity.IdleSession.OtherInputs
+    metrics.LastOtherInput=continuity.IdleSession.LastOtherInput
+    metrics.SessionStartedAt=continuity.IdleSession.StartedAt
+    metrics.PreferLegacy=continuity.IdleSession.PreferLegacy
+    metrics.EngineIdleEvents=continuity.IdleSession.EngineIdleEvents
+    metrics.LastEngineIdleSeconds=continuity.IdleSession.LastEngineIdleSeconds
+    metrics.Now=os.clock()
+    return metrics
 end
 
 function state.SetChoiceSearch(query)
@@ -3402,12 +4313,13 @@ end
 
 function state.SetEnabled(enabled)
     if not state.Alive then return end
+    if not enabled and not continuity.InternalPause then state.AutoResumePending=false state.FloorTravelResumeEnabled=nil end
     if enabled and currentFloor == 2 and state.Mode == "Quest" then
         state.Status = "เควสชั้น 2 • ตรวจข้อมูลเท่านั้น ยังไม่เปิดออโต้"
         updateStatus()
         return
     end
-    if enabled and (state.Mode == "Craft" or state.Mode == "Sell" or state.Crafting or state.Selling or state.Travelling) then return end
+    if enabled and (state.Mode == "Craft" or state.Mode == "Sell" or state.Crafting or state.Selling or state.Travelling or state.FloorTravelling) then return end
     if forgeQuest and state.Mode == "Quest" and state.Enabled ~= (enabled == true) then
         forgeQuest.Reset()
         if enabled then forgeQuest.CloseMenus() end
@@ -3794,6 +4706,8 @@ function state.Destroy()
     if potionController then potionController.Destroy() end
     state.CancelServiceTravel("ปิดระบบ • หยุดเดินแล้ว")
     state.SetEnabled(false)
+    continuity.IdleSession.Destroy()
+    continuity.Stop(state)
     state.CraftCancel = true
     if state.CraftThread and state.CraftThread ~= coroutine.running() then pcall(task.cancel, state.CraftThread) end
     if state.SellThread and state.SellThread ~= coroutine.running() then pcall(task.cancel, state.SellThread) end
@@ -3982,6 +4896,186 @@ refreshChoices = function()
         else b.Title.TextColor3 = theme.Text end
     end
 end
+
+-- Native floor travel and the World page. No transaction is automatically repeated.
+worldController = (function()
+    local api={Highest=1,LastRead=-10}
+    local function readHighest()
+        if os.clock()-api.LastRead<1 then return api.Highest end
+        api.LastRead=os.clock()
+        local getIdentity=getthreadidentity or getidentity
+        local setIdentity=setthreadidentity or setidentity
+        local previous=getIdentity and getIdentity() or 8
+        if setIdentity then setIdentity(2) end
+        local ok,value=pcall(function()
+            local native=require(player.PlayerScripts.Client.State)
+            local data=native.get()
+            return data and data.floors and data.floors.remakeHighest
+        end)
+        if setIdentity then setIdentity(previous) end
+        if ok and type(value)=="number" then api.Highest=math.clamp(math.floor(value),1,2) end
+        return api.Highest
+    end
+    function state.SaveSettings()
+        local ok=continuity.Save(state,true)
+        queueStatus()
+        return ok
+    end
+    function state.SetPersistenceEnabled(value)
+        state.PersistenceEnabled=value==true
+        state.SaveSettings()
+    end
+    function state.SetAutoJoinWorld(value)
+        state.AutoJoinWorld=value==true
+        state.SaveSettings()
+    end
+    function state.SetAutoResumeFarm(value)
+        state.AutoResumeFarm=value==true
+        if not state.AutoResumeFarm then state.AutoResumePending=false end
+        state.SaveSettings()
+    end
+    function state.ShowWorldPanel(open)
+        state.ShowSettings(false)
+        state.WorldOpen=open==true
+        if state.WorldOpen then
+            if view.Search then view.Search:ReleaseFocus(false) end
+            questBrowser.ReleaseFocus()
+        end
+        updateStatus()
+    end
+    function state.GetWorldStatus()
+        return {Floor=currentFloor,Highest=readHighest(),Travelling=state.FloorTravelling==true,
+            Status=state.FloorTravelStatus,Persistence=continuity.Store.Status,Continuation=continuity.QueueStatus,
+            AutoJoinWorld=state.AutoJoinWorld,AutoResumeFarm=state.AutoResumeFarm}
+    end
+    function api.TravelFailed(message)
+        if not state.FloorTravelling then return end
+        local resume=state.FloorTravelResumeEnabled
+        state.FloorTravelling,state.FloorTravelResumeEnabled,state.FloorTeleportStarted=false,nil,false
+        state.FloorTravelStatus=message or "ย้ายชั้นไม่สำเร็จ • ลองใหม่ได้"
+        if resume and state.AutoResumeFarm then state.SetEnabled(true) end
+        continuity.Save(state,true)
+        queueStatus()
+    end
+    function state.WarpToFloor(value)
+        local floor=tonumber(value) or (value=="Floor 1" and 1 or value=="Floor 2" and 2)
+        local reason
+        if floor~=1 and floor~=2 then reason="ยังไม่รองรับชั้นนี้"
+        elseif floor==currentFloor then reason="อยู่ชั้นนี้แล้ว"
+        elseif floor>readHighest() then reason="ต้องปลดล็อกชั้นนี้ในเกมก่อน"
+        elseif state.FloorTravelling then reason="กำลังย้ายชั้น กรุณารอสักครู่"
+        elseif state.Crafting or state.Selling or state.Travelling then reason="รอให้รายการหรือการเดินทางปัจจุบันจบก่อน"
+        elseif state.RestoringEquipment then reason="กำลังคืนอุปกรณ์ กรุณารอสักครู่" end
+        if reason then state.FloorTravelStatus=reason queueStatus() return false,reason end
+        local remote=game:GetService("ReplicatedStorage"):FindFirstChild("Remotes")
+        remote=remote and remote:FindFirstChild("TeleportFloor")
+        if not remote or not remote:IsA("RemoteEvent") then
+            state.FloorTravelStatus="ไม่พบระบบย้ายชั้นของเกม";queueStatus();return false,state.FloorTravelStatus
+        end
+        state.FloorTravelResumeEnabled=state.Enabled
+        state.FloorTravelling=true
+        state.FloorTeleportStarted=false
+        continuity.InternalPause=true
+        state.SetEnabled(false)
+        continuity.InternalPause=false
+        state.FloorTravelStatus="กำลังเตรียมไปชั้น "..floor
+        continuity.Save(state,true)
+        continuity.Queue()
+        task.spawn(function()
+            local deadline=os.clock()+10
+            while state.Alive and state.RestoringEquipment and os.clock()<deadline do task.wait(0.2) end
+            if not state.Alive then return end
+            if state.RestoringEquipment then api.TravelFailed("คืนอุปกรณ์ไม่ทัน • ยังไม่ได้ย้ายชั้น");return end
+            local ok=pcall(function()remote:FireServer("Floor "..floor)end)
+            if not ok then api.TravelFailed();return end
+            state.FloorTravelStatus="กำลังไปชั้น "..floor.." • รอเกมเชื่อมต่อ"
+            queueStatus()
+            local sentAt=os.clock()
+            while state.Alive and state.FloorTravelling and not state.FloorTeleportStarted and os.clock()-sentAt<25 do task.wait(0.5) end
+            if state.Alive and state.FloorTravelling and not state.FloorTeleportStarted then
+                api.TravelFailed("เกมยังไม่ย้ายชั้น • ตรวจสถานะแล้วลองใหม่ได้")
+            end
+        end)
+        queueStatus()
+        return true
+    end
+    function api.Mount(parent,nav,h)
+        local make,text,card,button=h.Make,h.Text,h.Card,h.Button
+        local frame=make("Frame",{Name="WorldContent",Position=UDim2.fromOffset(190,64),Size=UDim2.fromOffset(280,306),
+            BackgroundTransparency=1,Visible=false},parent)
+        local names={"CombatTab","MiningTab","CraftTab","SellTab","QuestTab"}
+        nav.Size=UDim2.fromOffset(152,214)
+        for index,name in names do
+            local b=nav[name]
+            b.Position,b.Size=UDim2.fromOffset(0,(index-1)*36),UDim2.fromOffset(152,32)
+            b.NavIndex.Size,b.NavLabel.Size=UDim2.fromOffset(22,32),UDim2.fromOffset(107,32)
+            b.ActiveRail.Position=UDim2.fromOffset(0,7)
+        end
+        local tab=button("โลก",UDim2.fromOffset(152,32),UDim2.fromOffset(0,180),nav)
+        tab.Name,tab.TextTransparency,tab.AutoButtonColor="WorldTab",1,false
+        text("NavLabel","โลกและบันทึกค่า",39,0,107,32,tab,12,theme.Frost).Font=Enum.Font.GothamMedium
+        text("NavIndex","06",11,0,22,32,tab,9,theme.Muted).Font=Enum.Font.GothamBold
+        make("Frame",{Name="ActiveRail",Position=UDim2.fromOffset(0,7),Size=UDim2.fromOffset(2,18),
+            BackgroundColor3=theme.AccentLight,BorderSizePixel=0,Visible=false},tab)
+        connect(tab.Activated,function()state.ShowWorldPanel(true)end)
+        local basePaint=view.PaintButton
+        view.PaintButton=function(b,active)
+            if b.Parent==nav and b~=tab and state.WorldOpen then active=false end
+            basePaint(b,active)
+        end
+        text("Title","โลกและการตั้งค่า",0,0,194,24,frame,15,theme.Text).Font=Enum.Font.GothamBold
+        local save=button("บันทึก",UDim2.fromOffset(76,24),UDim2.fromOffset(204,0),frame)
+        save.Name,save.TextSize="SaveSettings",11
+        connect(save.Activated,state.SaveSettings)
+        local function toggleCard(name,title,caption,y,callback)
+            local c=card(name,0,y,280,58,frame)
+            text("Title",title,10,5,172,22,c,12,theme.Text).Font=Enum.Font.GothamMedium
+            text("Caption",caption,10,31,260,19,c,10,theme.Muted)
+            local b=button("",UDim2.fromOffset(76,24),UDim2.fromOffset(194,6),c)
+            b.Name,b.TextSize="Toggle",11
+            connect(b.Activated,callback)
+            return b,c.Caption
+        end
+        local remember,rememberStatus=toggleCard("Persistence","จำการตั้งค่า","",32,function()state.SetPersistenceEnabled(not state.PersistenceEnabled)end)
+        local autoJoin=toggleCard("AutoJoinWorld","เข้าโลกอัตโนมัติ","เข้าโลกต่อเมื่ออยู่หน้าล็อบบี้",96,function()state.SetAutoJoinWorld(not state.AutoJoinWorld)end)
+        local autoResume=toggleCard("AutoResumeFarm","ฟาร์มต่อเมื่อเข้าใหม่","เฉพาะตีมอนและขุดแร่",160,function()state.SetAutoResumeFarm(not state.AutoResumeFarm)end)
+        text("FloorCaption","เดินทางข้ามชั้น",0,222,280,18,frame,10,theme.Muted)
+        local floors={}
+        for floor=1,2 do
+            local b=button("ไปชั้น "..floor,UDim2.fromOffset(136,32),UDim2.fromOffset((floor-1)*144,244),frame)
+            b.Name,b.TextSize="GoToFloor"..floor,12
+            connect(b.Activated,function()state.WarpToFloor(floor)end)
+            floors[floor]=b
+        end
+        local status=text("WorldStatus","",0,282,280,24,frame,10,theme.Frost)
+        status.TextWrapped,status.TextTruncate=true,Enum.TextTruncate.None
+        local chrome=view.UiChrome
+        view.UiChrome=function()
+            if chrome then chrome() end
+            frame.Visible=state.WorldOpen==true
+            if frame.Visible then
+                view.Main.Visible,view.Settings.Visible=false,false
+                if questBrowser.Frame then questBrowser.Frame.Visible=false end
+                parent.DragHandle.PageTitle.Text="โลกและบันทึกค่า"
+            end
+            view.PaintButton(tab,frame.Visible)
+            for _,row in {{remember,state.PersistenceEnabled},{autoJoin,state.AutoJoinWorld},{autoResume,state.AutoResumeFarm}} do
+                row[1].Text=row[2] and "เปิดอยู่" or "ปิดอยู่"
+                view.PaintButton(row[1],row[2])
+            end
+            rememberStatus.Text=continuity.Store.Status
+            local highest=readHighest()
+            for floor,b in floors do
+                b.Text=floor==currentFloor and ("ชั้น "..floor.." • อยู่ที่นี่") or floor>highest and ("ชั้น "..floor.." • ยังล็อก") or "ไปชั้น "..floor
+                b.Active=floor~=currentFloor and floor<=highest and not state.FloorTravelling
+                b.BackgroundColor3=b.Active and theme.Selected or theme.Surface
+                b.TextColor3=b.Active and theme.Text or theme.Muted
+            end
+            status.Text=state.FloorTravelStatus or continuity.QueueStatus
+        end
+    end
+    return api
+end)()
 
 local function createGui()
     local uiRoot = player.PlayerGui
@@ -4286,10 +5380,11 @@ local function createGui()
         local camera = workspace.CurrentCamera
         if not camera then return end
         local viewport = camera.ViewportSize
-        view.Scale.Scale = math.clamp(math.min(state.UiScale,(viewport.X-24)/304,(viewport.Y-24)/430),0.65,1.1)
+        local width,height = panel.Size.X.Offset,panel.Size.Y.Offset
+        view.Scale.Scale = math.clamp(math.min(state.UiScale,(viewport.X-24)/width,(viewport.Y-24)/height),0.5,1.1)
         local x,y = panel.Position.X.Offset,panel.Position.Y.Offset
-        panel.Position = UDim2.fromOffset(math.clamp(x,8,math.max(8,viewport.X-304*view.Scale.Scale-8)),
-            math.clamp(y,8,math.max(8,viewport.Y-430*view.Scale.Scale-8)))
+        panel.Position = UDim2.fromOffset(math.clamp(x,8,math.max(8,viewport.X-width*view.Scale.Scale-8)),
+            math.clamp(y,8,math.max(8,viewport.Y-height*view.Scale.Scale-8)))
     end
     local dragging,dragStart,panelStart
     connect(title.InputBegan,function(input)
@@ -4330,6 +5425,85 @@ local function createGui()
         end
     end)
     questBrowser.Mount(panel,{Text=text,Card=card,Field=field,Make=make,Button=button})
+    -- Presentation only: retain every existing control, callback and artwork asset.
+    do
+        panel.Size = UDim2.fromOffset(482,410)
+        title.Position,title.Size = UDim2.fromOffset(12,8),UDim2.fromOffset(298,40)
+        edge.Size = UDim2.fromOffset(442,2)
+        view.InventoryButton.Position = UDim2.fromOffset(318,14)
+        view.SettingsButton.Position = UDim2.fromOffset(366,14)
+        hide.Position,close.Position = UDim2.fromOffset(414,14),UDim2.fromOffset(444,14)
+        view.Main.Position,view.Settings.Position = UDim2.fromOffset(190,64),UDim2.fromOffset(190,64)
+        local questFrame = panel:FindFirstChild("QuestBrowser")
+        if questFrame then questFrame.Position = UDim2.fromOffset(190,64) end
+        autoRespawnButton.Position = UDim2.fromOffset(190,382)
+        view.Keys.Position,view.Keys.Size = UDim2.fromOffset(310,382),UDim2.fromOffset(160,18)
+        view.InventoryToast.Position = UDim2.fromOffset(190,378)
+        local chromeTitle = text("PageTitle","",178,2,116,24,title,14,theme.Text)
+        chromeTitle.Font = Enum.Font.GothamBold
+        text("PageSubtitle","CONTROL  /  FLOOR "..currentFloor,178,27,116,11,title,7,theme.Muted)
+        make("Frame",{Name="HeaderDivider",Position=UDim2.fromOffset(12,51),Size=UDim2.fromOffset(458,1),
+            BackgroundColor3=theme.Border,BackgroundTransparency=0.45,BorderSizePixel=0},panel)
+        make("Frame",{Name="SidebarDivider",Position=UDim2.fromOffset(176,64),Size=UDim2.fromOffset(1,306),
+            BackgroundColor3=theme.Border,BackgroundTransparency=0.45,BorderSizePixel=0},panel)
+        local contentSurface = card("ContentSurface",180,54,300,326,panel)
+        contentSurface.ZIndex,contentSurface.BackgroundTransparency = 0,0.18
+        local menuCaption = text("MenuCaption","หมวดการใช้งาน",20,62,144,20,panel,10,theme.Muted)
+        menuCaption.Font = Enum.Font.GothamMedium
+        nav.Position,nav.Size,nav.BackgroundTransparency = UDim2.fromOffset(12,90),UDim2.fromOffset(152,210),1
+        local navOutline = nav:FindFirstChildOfClass("UIStroke")
+        if navOutline then navOutline.Transparency = 1 end
+        local tabs = {
+            {combatTab,"Combat","ตีมอน"}, {miningTab,"Mining","ขุดแร่"},
+            {craftTab,"Craft","คราฟอาวุธ"}, {sellTab,"Sell","ขายอาวุธ"}, {view.QuestTab,"Quest","เควสและรางวัล"},
+        }
+        local hovered
+        local basePaint = view.PaintButton
+        view.PaintButton = function(b,active)
+            if b.Parent == nav then active = active and not state.SettingsOpen end
+            basePaint(b,active)
+            local rail = b:FindFirstChild("ActiveRail")
+            if rail then
+                rail.Visible = active == true
+                b.BackgroundTransparency = active and 0.08 or hovered == b and 0.2 or 1
+                b.NavLabel.TextColor3 = active and theme.Text or theme.Frost
+                b.Outline.Transparency = active and 0.35 or 1
+                b.NavIndex.TextColor3 = active and theme.AccentLight or theme.Muted
+            end
+        end
+        for index,row in tabs do
+            local b,mode,label = row[1],row[2],row[3]
+            b.Text,b.TextSize,b.Font = label,12,Enum.Font.GothamMedium
+            b.Position,b.Size = UDim2.fromOffset(0,(index-1)*42),UDim2.fromOffset(152,36)
+            b.TextXAlignment,b.AutoButtonColor,b.TextTransparency = Enum.TextXAlignment.Left,false,1
+            text("NavLabel",label,39,0,107,36,b,12,theme.Frost).Font = Enum.Font.GothamMedium
+            local icon = text("NavIndex",string.format("%02d",index),11,0,22,36,b,9,theme.Muted)
+            icon.Font = Enum.Font.GothamBold
+            make("Frame",{Name="ActiveRail",Position=UDim2.fromOffset(0,9),Size=UDim2.fromOffset(2,18),
+                BackgroundColor3=theme.AccentLight,BorderSizePixel=0,Visible=false},b)
+            connect(b.MouseEnter,function()hovered=b view.PaintButton(b,state.Mode==mode)end)
+            connect(b.MouseLeave,function()if hovered==b then hovered=nil end view.PaintButton(b,state.Mode==mode)end)
+        end
+        local profile = card("EvernightIdentity",12,312,152,58,panel)
+        profile.BackgroundTransparency = 0.2
+        local portrait = make("ImageLabel",{Name="Portrait",Position=UDim2.fromOffset(6,6),Size=UDim2.fromOffset(46,46),
+            BackgroundColor3=theme.Surface,BorderSizePixel=0,Image=evernightArtwork.Asset or "",
+            ImageRectOffset=Vector2.new(120,330),ImageRectSize=Vector2.new(500,500),ScaleType=Enum.ScaleType.Crop},profile)
+        round(portrait,9)
+        make("UIStroke",{Color=theme.Accent,Transparency=0.25,Thickness=1},portrait)
+        text("Name","EVERNIGHT",60,9,86,18,profile,10,theme.Text).Font = Enum.Font.GothamBold
+        local activity = text("Activity","พร้อมใช้งาน",60,31,86,16,profile,10,theme.Muted)
+        text("UiVersion","FLOOR "..currentFloor.."  ·  v"..state.Version,20,382,144,18,panel,9,theme.Muted)
+        local pageNames = {Combat="ตีมอน",Mining="ขุดแร่",Craft="คราฟอาวุธ",Sell="ขายอาวุธ",Quest="เควสและรางวัล"}
+        view.UiChrome = function()
+            chromeTitle.Text = state.SettingsOpen and "ตั้งค่า" or pageNames[state.Mode] or "EVERNIGHT"
+            activity.Text = state.Respawning and "รอเกิดใหม่" or state.Travelling and "กำลังเดินทาง"
+                or state.Crafting and "กำลังคราฟ" or state.Selling and "กำลังขาย"
+                or state.Enabled and (state.Mode=="Mining" and "กำลังขุดแร่" or "กำลังทำงาน") or "พร้อมใช้งาน"
+            activity.TextColor3 = (state.Enabled or state.Crafting or state.Selling or state.Travelling) and theme.AccentLight or theme.Muted
+        end
+    end
+    worldController.Mount(panel,nav,{Make=make,Text=text,Card=card,Button=button})
     view.Fit()
     refreshChoices()
     updateStatus()
@@ -5347,7 +6521,7 @@ if not controls then
 end
 state.HasControls = controls ~= nil
 createGui()
-state.AntiAfkConnection = connect(player.Idled, state.HandleIdle)
+state.AntiAfkConnection = continuity.IdleSession.Connection
 state.WebhookThread = task.spawn(function()
     local setIdentity = setthreadidentity or setidentity
     if setIdentity then setIdentity(8) end
@@ -5393,3 +6567,55 @@ task.spawn(function()
         if state.Alive then pcall(refreshChoices) end
     end
 end)
+
+
+-- Restore the farm switch only after all native adapters and UI are available.
+continuity.Queue()
+connect(player.OnTeleport,function(teleportState)
+    if teleportState==Enum.TeleportState.Started or teleportState==Enum.TeleportState.InProgress
+        or teleportState==Enum.TeleportState.WaitingForServer then
+        state.FloorTeleportStarted=true
+        continuity.Save(state,true)
+        continuity.Queue()
+    end
+end)
+connect(game:GetService("TeleportService").TeleportInitFailed,function(who)
+    if who==player then worldController.TravelFailed("ย้ายชั้นไม่สำเร็จ • ลองใหม่ได้") end
+end)
+state.ShowMenu(previousSettings.MenuVisible~=false)
+state.AutoResumePending=continuity.Store.CanResume(previousSettings,state.Mode)
+if state.AutoResumePending then state.FloorTravelResumeEnabled=true end
+state.PersistenceThread=task.spawn(function()
+    while state.Alive do
+        local ok=pcall(continuity.Save,state,false)
+        if not ok then state.PersistenceStatus="บันทึกขัดข้อง • จะลองใหม่" end
+        task.wait(0.5)
+    end
+end)
+task.spawn(function()
+    local deadline=os.clock()+15
+    while state.Alive and state.AutoResumePending and state.AutoResumeFarm and os.clock()<deadline do
+        local c=player.Character
+        local h=c and c:FindFirstChildOfClass("Humanoid")
+        if h and h.Health>0 and c:FindFirstChild("HumanoidRootPart") and not state.RestoringEquipment then
+            state.SetEnabled(true)
+            if state.Enabled then break end
+        end
+        task.wait(0.5)
+    end
+    state.AutoResumePending=false
+    if not state.FloorTravelling then state.FloorTravelResumeEnabled=nil end
+    if state.Alive then continuity.Save(state,true) end
+end)
+]====]
+local installed,installError=pcall(function()
+    if type(writefile)~="function" then return end
+    if type(makefolder)=="function" then pcall(makefolder,"EvernightControl") end
+    writefile("EvernightControl/main.luau",source)
+    if type(readfile)=="function" and readfile("EvernightControl/main.luau")~=source then error("Source verification failed") end
+end)
+local chunk,problem=loadstring(source)
+if not chunk then getgenv().EvernightContinuityInit={Ok=false,Error=problem};return end
+local ok,result=xpcall(chunk,debug.traceback)
+getgenv().EvernightContinuityInit={Ok=ok,Installed=installed,Error=not ok and tostring(result) or not installed and tostring(installError) or nil}
+return ok and result or nil
