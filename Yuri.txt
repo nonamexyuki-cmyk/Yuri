@@ -1,4 +1,4 @@
--- Evernight v2.28: self-contained installer and runner.
+-- Evernight v2.30: self-contained installer and runner.
 local source=[====[
 -- Persistent preferences and teleport continuation, confined to Project Eternity.
 local continuity = (function()
@@ -968,7 +968,7 @@ end
 continuity.Apply(previousSettings)
 local inheritedRestores = {}
 for _, old in filtergc("table", {Keys = {"Alive", "Enabled", "Selected", "SetEnabled", "Destroy"}}, false) do
-    if old.Version == "2.28" or old.Version == "2.27" or old.Version == "2.26" or old.Version == "2.25" or old.Version == "2.24" or old.Version == "2.23" or old.Version == "2.22" or old.Version == "2.21" or old.Version == "2.20" or old.Version == "2.19" or old.Version == "2.18" or old.Version == "2.17" or old.Version == "2.16" or old.Version == "1.0" or old.Version == "1.1" or old.Version == "1.2" or old.Version == "1.3" or old.Version == "1.4" or old.Version == "1.5" or old.Version == "1.6" or old.Version == "1.7" or old.Version == "1.8" or old.Version == "1.9" or old.Version == "2.0" or old.Version == "2.1" or old.Version == "2.2" or old.Version == "2.3" or old.Version == "2.4" or old.Version == "2.5" or old.Version == "2.6" or old.Version == "2.7" or old.Version == "2.8" or old.Version == "2.9" or old.Version == "2.10" or old.Version == "2.11" or old.Version == "2.12" or old.Version == "2.13" or old.Version == "2.14" or old.Version == "2.15" then
+    if old.Version == "2.30" or old.Version == "2.29" or old.Version == "2.28" or old.Version == "2.27" or old.Version == "2.26" or old.Version == "2.25" or old.Version == "2.24" or old.Version == "2.23" or old.Version == "2.22" or old.Version == "2.21" or old.Version == "2.20" or old.Version == "2.19" or old.Version == "2.18" or old.Version == "2.17" or old.Version == "2.16" or old.Version == "1.0" or old.Version == "1.1" or old.Version == "1.2" or old.Version == "1.3" or old.Version == "1.4" or old.Version == "1.5" or old.Version == "1.6" or old.Version == "1.7" or old.Version == "1.8" or old.Version == "1.9" or old.Version == "2.0" or old.Version == "2.1" or old.Version == "2.2" or old.Version == "2.3" or old.Version == "2.4" or old.Version == "2.5" or old.Version == "2.6" or old.Version == "2.7" or old.Version == "2.8" or old.Version == "2.9" or old.Version == "2.10" or old.Version == "2.11" or old.Version == "2.12" or old.Version == "2.13" or old.Version == "2.14" or old.Version == "2.15" then
         old.Reloading=true
         if old.Enabled or old.AutoResumePending then old.FloorTravelResumeEnabled=true end
         local cleanup = task.spawn(function() pcall(old.Destroy) end)
@@ -1070,17 +1070,21 @@ local function createLowGraphicsController(state, options)
     if quality==nil then pcall(function()quality=UserSettings():GetService("UserGameSettings")end) end
     local enums=options.Enums or Enum
     local spawn=options.Spawn or task.spawn
+    local defer=options.Defer or options.Spawn or task.defer
     local wait=options.Wait or task.wait
-    local batchSize=math.clamp(tonumber(options.BatchSize) or 48,1,128)
-    local batchDelay=math.clamp(tonumber(options.BatchDelay) or 0.035,0,0.2)
+    local batchSize=math.clamp(tonumber(options.BatchSize) or 64,1,128)
+    local batchDelay=math.clamp(tonumber(options.BatchDelay) or 0.015,0,0.2)
     local maxObjects=math.clamp(tonumber(options.MaxObjects) or 12000,1,30000)
-    local records=setmetatable({},{__mode="k"})
+    -- Native parents do not keep Lua Instance wrappers alive; restorations need strong keys.
+    local records={}
     local pending=setmetatable({},{__mode="k"})
     -- Strong references keep detached visual layers available for restoration.
     local detached,detachedParents={},{}
     local detaching=setmetatable({},{__mode="k"})
     local watching=setmetatable({},{__mode="k"})
     local scanned,queryCounts=0,{}
+    local radius=math.clamp(tonumber(options.Radius) or 600,100,2000)
+    local lastCenter,lastNearbyAt,nearbyPasses=nil,-100,0
     local queue,head={},1
     local connections={}
     local enabled,destroyed,running=false,false,false
@@ -1208,7 +1212,7 @@ local function createLowGraphicsController(state, options)
             if cursor==world then return false end
             if not cursor or cursor==camera then return true end
             local name=string.lower(tostring(cursor.Name or ""))
-            if protectedNames[name] or string.find(name,"telegraph",1,true)
+            if protectedNames[name] or string.find(name,"npc",1,true) or string.find(name,"telegraph",1,true)
                 or string.find(name,"indicator",1,true) or string.find(name,"hitbox",1,true)
                 or string.find(name,"marker",1,true) or string.find(name,"attack",1,true)
                 or string.find(name,"ability",1,true) or string.find(name,"skill",1,true)
@@ -1233,6 +1237,31 @@ local function createLowGraphicsController(state, options)
     local function staticPart(node)
         return node and node~=terrain and not isA(node,"Terrain") and isA(node,"BasePart") and node.Anchored==true
             and node.Transparency<1 and not protected(node)
+    end
+    local function originNow()
+        if type(options.Origin)=="function" then
+            local ok,value=pcall(options.Origin)
+            if ok and typeof(value)=="Vector3" then return value end
+        end
+        local who=players and players.LocalPlayer
+        local character=who and who.Character
+        local root=character and character:FindFirstChild("HumanoidRootPart")
+        return root and root.Position or nil
+    end
+    local function nodeDistance(node,origin)
+        local cursor=node
+        for _=1,8 do
+            if not cursor then return nil end
+            if isA(cursor,"BasePart") then
+                if cursor==terrain or isA(cursor,"Terrain") then return nil end
+                local ok,position=read(cursor,"Position")
+                return ok and typeof(position)=="Vector3" and (position-origin).Magnitude or nil
+            end
+            local ok,parent=read(cursor,"Parent")
+            if not ok then return nil end
+            cursor=parent
+        end
+        return nil
     end
     local function process(node)
         if isA(node,"PostEffect") and within(node,lighting) then
@@ -1281,6 +1310,57 @@ local function createLowGraphicsController(state, options)
             apply(terrain,"Decoration",false,true)
             apply(terrain,"WaterWaveSize",0,true)apply(terrain,"WaterWaveSpeed",0,true)
             apply(terrain,"WaterReflectance",0,true)apply(terrain,"WaterTransparency",1,true)
+            local origin=originNow()
+            if origin then
+                -- Keep the bounded cache focused on the current play area, rather than distant map pieces.
+                for node,entry in detached do
+                    if token~=epoch or not enabled or destroyed then return end
+                    local distance=nodeDistance(entry.Parent,origin)
+                    if distance and distance>radius*0.5 then restoreSurface(node,entry) end
+                end
+                for node,record in records do
+                    if token~=epoch or not enabled or destroyed then return end
+                    local distance=nodeDistance(node,origin)
+                    if distance and distance>radius*0.5 then restore(node,record) end
+                end
+                local postOk,posts=pcall(function()return lighting:QueryDescendants("PostEffect")end)
+                if postOk then
+                    queryCounts.PostEffect=#posts
+                    for _,node in posts do if not step(node) then return end end
+                end
+                local ok,parts=pcall(function()return world:QueryDescendants("BasePart")end)
+                if ok then
+                    queryCounts.BasePart=#parts
+                    local buckets,nearby={},0
+                    for index,node in parts do
+                        if token~=epoch or not enabled or destroyed then return end
+                        local distance=nodeDistance(node,origin)
+                        if distance and distance<=radius then
+                            local bin=math.floor(distance/100)
+                            buckets[bin]=buckets[bin] or {}
+                            table.insert(buckets[bin],node)nearby+=1
+                        end
+                        if index%4096==0 then wait(batchDelay) end
+                    end
+                    queryCounts.NearbyParts=nearby
+                    local full=false
+                    for bin=0,math.ceil(radius/100) do
+                        for _,node in buckets[bin] or {} do
+                            if changed>=maxObjects then capped+=1 full=true break end
+                            if not step(node) then return end
+                            local got,children=pcall(function()return node:GetChildren()end)
+                            if got then
+                                for _,child in children do
+                                    if candidate(child) and not step(child) then return end
+                                end
+                            end
+                        end
+                        if full then break end
+                    end
+                    lastCenter,lastNearbyAt=origin,os.clock()
+                    nearbyPasses+=1
+                else errors+=1 lastError=tostring(parts) end
+            else
             -- Query only render candidates once. Added objects are handled by signals below.
             for _,query in {{lighting,"PostEffect"},{world,"SurfaceAppearance"},{world,"SpecialMesh"},
                 {world,"Decal, Texture"},{world,"MeshPart"},{world,"BasePart"}} do
@@ -1290,6 +1370,7 @@ local function createLowGraphicsController(state, options)
                     queryCounts[query[2]]=#items
                     for _,node in items do if not step(node) then return end end
                 elseif query[1] then errors+=1 lastError=tostring(items) end
+            end
             end
         end
         while head<=#queue do
@@ -1308,11 +1389,24 @@ local function createLowGraphicsController(state, options)
         if running then return end
         running=true
         local token=epoch
-        spawn(function()
+        local schedule=initial and spawn or defer
+        schedule(function()
             local ok,problem=pcall(runApply,token,initial)
             if token==epoch and not ok then
                 errors+=1 lastError=tostring(problem)running=false
                 publish("ลดกราฟิกบางส่วนแล้ว")
+            end
+        end)
+    end
+    local function monitorPosition(token)
+        if not players or not players.LocalPlayer then return end
+        spawn(function()
+            while enabled and not destroyed and token==epoch do
+                wait(2)
+                if enabled and not destroyed and token==epoch and not running and os.clock()-lastNearbyAt>=8 then
+                    local origin=originNow()
+                    if origin and (not lastCenter or (origin-lastCenter).Magnitude>=180) then launch(true) end
+                end
             end
         end)
     end
@@ -1352,6 +1446,7 @@ local function createLowGraphicsController(state, options)
                 if removed then table.insert(connections,removal) end
             end
             launch(true)
+            monitorPosition(epoch)
         else
             publish("กำลังคืนภาพเดิม…")
             local token=epoch
@@ -1375,7 +1470,7 @@ local function createLowGraphicsController(state, options)
     function controller.Snapshot()
         return {Enabled=enabled,Destroyed=destroyed,Status=status,Changed=changed,
             Properties=modified,Skipped=skipped,Capped=capped,Errors=errors,LastError=lastError,
-            Scanned=scanned,QueryCounts=table.clone(queryCounts)}
+            Scanned=scanned,QueryCounts=table.clone(queryCounts),NearbyPasses=nearbyPasses,Radius=radius,Center=lastCenter and tostring(lastCenter)}
     end
     function controller.Destroy()
         if destroyed then return end
@@ -1410,7 +1505,7 @@ local state = {
     AutoTownWarp = previousSettings.AutoTownWarp ~= false, Warps = 0,
     Status = "พร้อมใช้งาน", Target = nil, Distance = 0,
     Attacks = 0, Kills = 0, DamageObserved = 0, PathStatus = "idle", LastError = nil,
-    MenuVisible = true, Version = "2.28", Connections = {},
+    MenuVisible = true, Version = "2.30", Connections = {},
     PersistenceEnabled=previousSettings.PersistenceEnabled~=false, AutoJoinWorld=previousSettings.AutoJoinWorld~=false, AutoResumeFarm=previousSettings.AutoResumeFarm~=false,
     LastFloor=currentFloor, WorldOpen=false, FloorTravelling=false, PersistenceStatus=continuity.Store.Status,
     LowGraphics = previousSettings.LowGraphics ~= false, LowGraphicsStatus = "พร้อมลดกราฟิก", LowGraphicsChanged = 0, SettingsOpen = false, MaterialPickerOpen = false, UiScale = previousSettings.UiScale or 1,
