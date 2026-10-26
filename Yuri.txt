@@ -1,4 +1,4 @@
--- Evernight v2.27: self-contained installer and runner.
+-- Evernight v2.28: self-contained installer and runner.
 local source=[====[
 -- Persistent preferences and teleport continuation, confined to Project Eternity.
 local continuity = (function()
@@ -968,7 +968,7 @@ end
 continuity.Apply(previousSettings)
 local inheritedRestores = {}
 for _, old in filtergc("table", {Keys = {"Alive", "Enabled", "Selected", "SetEnabled", "Destroy"}}, false) do
-    if old.Version == "2.27" or old.Version == "2.26" or old.Version == "2.25" or old.Version == "2.24" or old.Version == "2.23" or old.Version == "2.22" or old.Version == "2.21" or old.Version == "2.20" or old.Version == "2.19" or old.Version == "2.18" or old.Version == "2.17" or old.Version == "2.16" or old.Version == "1.0" or old.Version == "1.1" or old.Version == "1.2" or old.Version == "1.3" or old.Version == "1.4" or old.Version == "1.5" or old.Version == "1.6" or old.Version == "1.7" or old.Version == "1.8" or old.Version == "1.9" or old.Version == "2.0" or old.Version == "2.1" or old.Version == "2.2" or old.Version == "2.3" or old.Version == "2.4" or old.Version == "2.5" or old.Version == "2.6" or old.Version == "2.7" or old.Version == "2.8" or old.Version == "2.9" or old.Version == "2.10" or old.Version == "2.11" or old.Version == "2.12" or old.Version == "2.13" or old.Version == "2.14" or old.Version == "2.15" then
+    if old.Version == "2.28" or old.Version == "2.27" or old.Version == "2.26" or old.Version == "2.25" or old.Version == "2.24" or old.Version == "2.23" or old.Version == "2.22" or old.Version == "2.21" or old.Version == "2.20" or old.Version == "2.19" or old.Version == "2.18" or old.Version == "2.17" or old.Version == "2.16" or old.Version == "1.0" or old.Version == "1.1" or old.Version == "1.2" or old.Version == "1.3" or old.Version == "1.4" or old.Version == "1.5" or old.Version == "1.6" or old.Version == "1.7" or old.Version == "1.8" or old.Version == "1.9" or old.Version == "2.0" or old.Version == "2.1" or old.Version == "2.2" or old.Version == "2.3" or old.Version == "2.4" or old.Version == "2.5" or old.Version == "2.6" or old.Version == "2.7" or old.Version == "2.8" or old.Version == "2.9" or old.Version == "2.10" or old.Version == "2.11" or old.Version == "2.12" or old.Version == "2.13" or old.Version == "2.14" or old.Version == "2.15" then
         old.Reloading=true
         if old.Enabled or old.AutoResumePending then old.FloorTravelResumeEnabled=true end
         local cleanup = task.spawn(function() pcall(old.Destroy) end)
@@ -1076,6 +1076,11 @@ local function createLowGraphicsController(state, options)
     local maxObjects=math.clamp(tonumber(options.MaxObjects) or 12000,1,30000)
     local records=setmetatable({},{__mode="k"})
     local pending=setmetatable({},{__mode="k"})
+    -- Strong references keep detached visual layers available for restoration.
+    local detached,detachedParents={},{}
+    local detaching=setmetatable({},{__mode="k"})
+    local watching=setmetatable({},{__mode="k"})
+    local scanned,queryCounts=0,{}
     local queue,head={},1
     local connections={}
     local enabled,destroyed,running=false,false,false
@@ -1104,7 +1109,7 @@ local function createLowGraphicsController(state, options)
     local function apply(node,key,value,global)
         if not node or node==false or value==nil then return end
         local ok,current=read(node,key)
-        if not ok or current==value then return end
+        if not ok or current==nil or current==value then return end
         local record=records[node]
         if not record then
             if not global and changed>=maxObjects then capped+=1 return end
@@ -1120,6 +1125,59 @@ local function createLowGraphicsController(state, options)
         else
             table.insert(record,key)table.insert(record,current)table.insert(record,value)
             modified+=1
+        end
+    end
+    local function watch(node,key,value)
+        if not node or node==false then return end
+        local keys=watching[node]
+        if keys and keys[key] then return end
+        local ok,connection=pcall(function()
+            return node:GetPropertyChangedSignal(key):Connect(function()
+                if not enabled or destroyed then return end
+                local readOk,current=read(node,key)
+                if readOk and current~=value then apply(node,key,value,true)publish() end
+            end)
+        end)
+        if ok then
+            keys=keys or {} watching[node]=keys keys[key]=true
+            table.insert(connections,connection)
+        end
+    end
+    local function restoreSurface(node,entry)
+        detached[node]=nil
+        local siblings=detachedParents[entry.Parent]
+        if siblings then siblings[node]=nil if next(siblings)==nil then detachedParents[entry.Parent]=nil end end
+        local ok,parent=read(node,"Parent")
+        detaching[node]=true
+        if ok and parent==nil then write(node,"Parent",entry.Parent) end
+        detaching[node]=nil
+        changed=math.max(0,changed-1)modified=math.max(0,modified-1)
+    end
+    local function detachSurface(node)
+        local parent=node.Parent
+        if not parent then return end
+        local existing=detached[node]
+        if existing then
+            if parent~=existing.Parent then
+                local old=detachedParents[existing.Parent]
+                if old then old[node]=nil if next(old)==nil then detachedParents[existing.Parent]=nil end end
+                local siblings=detachedParents[parent] or {} detachedParents[parent]=siblings siblings[node]=true
+                existing.Parent=parent
+            end
+            detaching[node]=true write(node,"Parent",nil)detaching[node]=nil
+            return
+        end
+        if changed>=maxObjects then capped+=1 return end
+        local entry={Parent=parent}
+        detached[node]=entry
+        local siblings=detachedParents[parent] or {} detachedParents[parent]=siblings siblings[node]=true
+        detaching[node]=true
+        local ok=write(node,"Parent",nil)
+        detaching[node]=nil
+        if ok then changed+=1 modified+=1
+        else
+            detached[node]=nil siblings[node]=nil
+            if next(siblings)==nil then detachedParents[parent]=nil end
         end
     end
     local function restore(node,record)
@@ -1178,20 +1236,27 @@ local function createLowGraphicsController(state, options)
     end
     local function process(node)
         if isA(node,"PostEffect") and within(node,lighting) then
-            apply(node,"Enabled",false)
+            apply(node,"Enabled",false)watch(node,"Enabled",false)
+        elseif isA(node,"SurfaceAppearance") and staticPart(node.Parent) then
+            detachSurface(node)
+        elseif isA(node,"SpecialMesh") and staticPart(node.Parent) then
+            apply(node,"TextureId","")
         elseif isA(node,"BasePart") and staticPart(node) then
             apply(node,"CastShadow",false)
             apply(node,"Material",enums.Material.SmoothPlastic)
+            apply(node,"MaterialVariant","")
+            if isA(node,"MeshPart") then apply(node,"TextureID","") end
         elseif isA(node,"Decal") and staticPart(node.Parent) then
             apply(node,"Transparency",1)
         else skipped+=1 end
     end
     local function candidate(node)
         return isA(node,"BasePart") or isA(node,"Decal") or isA(node,"PostEffect")
+            or isA(node,"SurfaceAppearance") or isA(node,"SpecialMesh")
     end
     local function disconnect()
         for _,connection in connections do pcall(function()connection:Disconnect()end) end
-        table.clear(connections)
+        table.clear(connections)table.clear(watching)
     end
     local function clearQueue()
         table.clear(queue) table.clear(pending) head=1
@@ -1200,7 +1265,9 @@ local function createLowGraphicsController(state, options)
         local processed=0
         local function step(node)
             if token~=epoch or not enabled or destroyed then return false end
-            process(node) processed+=1
+            local ok,problem=pcall(process,node)
+            scanned+=1 processed+=1
+            if not ok then errors+=1 lastError=tostring(problem) end
             if processed%batchSize==0 then
                 publish()wait(batchDelay)
                 if token~=epoch or not enabled or destroyed then return false end
@@ -1208,15 +1275,19 @@ local function createLowGraphicsController(state, options)
             return true
         end
         if initial then
-            apply(lighting,"GlobalShadows",false,true)
+            apply(lighting,"GlobalShadows",false,true)watch(lighting,"GlobalShadows",false)
             apply(quality,"SavedQualityLevel",enums.SavedQualitySetting.QualityLevel1,true)
+            watch(quality,"SavedQualityLevel",enums.SavedQualitySetting.QualityLevel1)
+            apply(terrain,"Decoration",false,true)
             apply(terrain,"WaterWaveSize",0,true)apply(terrain,"WaterWaveSpeed",0,true)
             apply(terrain,"WaterReflectance",0,true)apply(terrain,"WaterTransparency",1,true)
             -- Query only render candidates once. Added objects are handled by signals below.
-            for _,query in {{lighting,"PostEffect"},{world,"BasePart"},{world,"Decal"}} do
+            for _,query in {{lighting,"PostEffect"},{world,"SurfaceAppearance"},{world,"SpecialMesh"},
+                {world,"Decal, Texture"},{world,"MeshPart"},{world,"BasePart"}} do
                 if token~=epoch or not enabled or destroyed then return end
                 local ok,items=pcall(function()return query[1]:QueryDescendants(query[2])end)
                 if ok then
+                    queryCounts[query[2]]=#items
                     for _,node in items do if not step(node) then return end end
                 elseif query[1] then errors+=1 lastError=tostring(items) end
             end
@@ -1246,10 +1317,19 @@ local function createLowGraphicsController(state, options)
         end)
     end
     local function added(node)
-        if not enabled or destroyed or pending[node] or not candidate(node) then return end
+        if not enabled or destroyed or pending[node] or detaching[node] or not candidate(node) then return end
         pending[node]=true table.insert(queue,node)launch(false)
     end
     local function removing(node)
+        -- Ignore both synchronous and deferred signals from our own visual detachment.
+        if detaching[node] or detached[node] then return end
+        local layers=detachedParents[node]
+        if layers then
+            for layer in layers do
+                local entry=detached[layer]
+                if entry then restoreSurface(layer,entry) end
+            end
+        end
         local record=records[node]
         if record then restore(node,record) end
     end
@@ -1258,11 +1338,12 @@ local function createLowGraphicsController(state, options)
         value=value==true
         if destroyed then return false end
         state.LowGraphics=value
-        if value==enabled then return true end
+        if value==enabled and not value then return true end
         enabled=value epoch+=1 running=false
         disconnect()clearQueue()
         if enabled then
-            skipped,capped,errors,lastError=0,0,0,nil
+            skipped,capped,errors,lastError,scanned=0,0,0,nil,0
+            table.clear(queryCounts)
             publish("กำลังลดกราฟิก…")
             for _,root in {world,lighting} do
                 local ok,connection=pcall(function()return root.DescendantAdded:Connect(added)end)
@@ -1276,6 +1357,11 @@ local function createLowGraphicsController(state, options)
             local token=epoch
             spawn(function()
                 local processed=0
+                for node,entry in detached do
+                    if token~=epoch or enabled or destroyed then return end
+                    restoreSurface(node,entry)processed+=1
+                    if processed%batchSize==0 then publish()wait(batchDelay) end
+                end
                 for node,record in records do
                     if token~=epoch or enabled or destroyed then return end
                     restore(node,record)processed+=1
@@ -1288,13 +1374,15 @@ local function createLowGraphicsController(state, options)
     end
     function controller.Snapshot()
         return {Enabled=enabled,Destroyed=destroyed,Status=status,Changed=changed,
-            Properties=modified,Skipped=skipped,Capped=capped,Errors=errors,LastError=lastError}
+            Properties=modified,Skipped=skipped,Capped=capped,Errors=errors,LastError=lastError,
+            Scanned=scanned,QueryCounts=table.clone(queryCounts)}
     end
     function controller.Destroy()
         if destroyed then return end
         destroyed=true enabled=false epoch+=1 running=false
         disconnect()clearQueue()
         -- Finish before a replacement controller starts, so reloads cannot race restores.
+        for node,entry in detached do restoreSurface(node,entry) end
         for node,record in records do restore(node,record) end
         publish("คืนภาพเดิมแล้ว")
     end
@@ -1322,7 +1410,7 @@ local state = {
     AutoTownWarp = previousSettings.AutoTownWarp ~= false, Warps = 0,
     Status = "พร้อมใช้งาน", Target = nil, Distance = 0,
     Attacks = 0, Kills = 0, DamageObserved = 0, PathStatus = "idle", LastError = nil,
-    MenuVisible = true, Version = "2.27", Connections = {},
+    MenuVisible = true, Version = "2.28", Connections = {},
     PersistenceEnabled=previousSettings.PersistenceEnabled~=false, AutoJoinWorld=previousSettings.AutoJoinWorld~=false, AutoResumeFarm=previousSettings.AutoResumeFarm~=false,
     LastFloor=currentFloor, WorldOpen=false, FloorTravelling=false, PersistenceStatus=continuity.Store.Status,
     LowGraphics = previousSettings.LowGraphics ~= false, LowGraphicsStatus = "พร้อมลดกราฟิก", LowGraphicsChanged = 0, SettingsOpen = false, MaterialPickerOpen = false, UiScale = previousSettings.UiScale or 1,
@@ -5992,7 +6080,7 @@ local function updateStatus()
     if view.LowGraphicsToggle then
         view.LowGraphicsToggle.Text = state.LowGraphics and "เปิดอยู่" or "ปิดอยู่"
         view.PaintButton(view.LowGraphicsToggle,state.LowGraphics)
-        view.LowGraphicsStatus.Text = state.LowGraphicsStatus or "ลดเงาและรายละเอียดฉาก"
+        view.LowGraphicsStatus.Text = tostring(state.LowGraphicsChanged or 0) .. " จุด · " .. (state.LowGraphicsStatus or "ลดเงาและรายละเอียดฉาก")
     end
     view.SizeButton.Text = "ขนาด " .. math.floor((view.Scale.Scale or 1)*100+0.5) .. "%"
     view.AutoPotionToggle.Text = state.AutoPotion and "เปิดอยู่" or "ปิดอยู่"
