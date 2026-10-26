@@ -1,4 +1,4 @@
--- Evernight v2.26: self-contained installer and runner.
+-- Evernight v2.27: self-contained installer and runner.
 local source=[====[
 -- Persistent preferences and teleport continuation, confined to Project Eternity.
 local continuity = (function()
@@ -25,7 +25,7 @@ local function createPersistentSettings(options)
     local lastWebhookKey = nil
     local schemaVersion = 1
     local booleanKeys = {"PersistenceEnabled", "AutoJoinWorld", "AutoResumeFarm", "Enabled", "AutoTownWarp",
-        "AutoRespawn", "AntiAfk", "SkillsEnabled", "AutoPotion", "MenuVisible", "WebhookEnabled"}
+        "AutoRespawn", "AntiAfk", "SkillsEnabled", "AutoPotion", "MenuVisible", "WebhookEnabled", "LowGraphics"}
     local modes = {Combat = true, Mining = true, Craft = true, Sell = true, Quest = true}
     local oreKinds = {CaveSteelFirst = true, SteelOre = true, IronOre = true, CrystalliteOre = true,
         CrystalliteArea1 = true, CrystalliteArea2 = true}
@@ -958,7 +958,7 @@ if env.EternityAutoFarm and env.EternityAutoFarm.Alive then
         AntiAfk = old.AntiAfk, AntiAfkPulses = old.AntiAfkPulses,
         QuestRuns = old.QuestRuns, QuestFailures = old.QuestFailures, QuestLastCompleted = old.QuestLastCompleted, SelectedStoneQuest = old.SelectedStoneQuest, QuestStoneEarned = old.QuestStoneEarned, QuestAutoPage = old.QuestAutoPage, Floor1QuestOrder = old.Floor1QuestOrder,
         SkillsEnabled = old.SkillsEnabled, SkillSelection = old.SkillSelection, SkillsUsed = old.SkillsUsed,
-        AutoPotion = old.AutoPotion, PotionThreshold = old.PotionThreshold, PotionUsed = old.PotionUsed,
+        LowGraphics = old.LowGraphics, AutoPotion = old.AutoPotion, PotionThreshold = old.PotionThreshold, PotionUsed = old.PotionUsed,
         QuestFilter = old.QuestFilter, QuestSearch = old.QuestSearch, SelectedQuest = old.SelectedQuest}
     if typeof(old.GetWebhookSettings) == "function" then
         local ok, settings = pcall(old.GetWebhookSettings)
@@ -968,7 +968,7 @@ end
 continuity.Apply(previousSettings)
 local inheritedRestores = {}
 for _, old in filtergc("table", {Keys = {"Alive", "Enabled", "Selected", "SetEnabled", "Destroy"}}, false) do
-    if old.Version == "2.26" or old.Version == "2.25" or old.Version == "2.24" or old.Version == "2.23" or old.Version == "2.22" or old.Version == "2.21" or old.Version == "2.20" or old.Version == "2.19" or old.Version == "2.18" or old.Version == "2.17" or old.Version == "2.16" or old.Version == "1.0" or old.Version == "1.1" or old.Version == "1.2" or old.Version == "1.3" or old.Version == "1.4" or old.Version == "1.5" or old.Version == "1.6" or old.Version == "1.7" or old.Version == "1.8" or old.Version == "1.9" or old.Version == "2.0" or old.Version == "2.1" or old.Version == "2.2" or old.Version == "2.3" or old.Version == "2.4" or old.Version == "2.5" or old.Version == "2.6" or old.Version == "2.7" or old.Version == "2.8" or old.Version == "2.9" or old.Version == "2.10" or old.Version == "2.11" or old.Version == "2.12" or old.Version == "2.13" or old.Version == "2.14" or old.Version == "2.15" then
+    if old.Version == "2.27" or old.Version == "2.26" or old.Version == "2.25" or old.Version == "2.24" or old.Version == "2.23" or old.Version == "2.22" or old.Version == "2.21" or old.Version == "2.20" or old.Version == "2.19" or old.Version == "2.18" or old.Version == "2.17" or old.Version == "2.16" or old.Version == "1.0" or old.Version == "1.1" or old.Version == "1.2" or old.Version == "1.3" or old.Version == "1.4" or old.Version == "1.5" or old.Version == "1.6" or old.Version == "1.7" or old.Version == "1.8" or old.Version == "1.9" or old.Version == "2.0" or old.Version == "2.1" or old.Version == "2.2" or old.Version == "2.3" or old.Version == "2.4" or old.Version == "2.5" or old.Version == "2.6" or old.Version == "2.7" or old.Version == "2.8" or old.Version == "2.9" or old.Version == "2.10" or old.Version == "2.11" or old.Version == "2.12" or old.Version == "2.13" or old.Version == "2.14" or old.Version == "2.15" then
         old.Reloading=true
         if old.Enabled or old.AutoResumePending then old.FloorTravelResumeEnabled=true end
         local cleanup = task.spawn(function() pcall(old.Destroy) end)
@@ -1054,6 +1054,254 @@ local function createAutoResumeController(state, options)
     return api
 end
 
+-- Reversible visual reductions. No frame loop, physics changes, or combat-effect hiding.
+local function createLowGraphicsController(state, options)
+    options=options or {}
+    local function service(name)
+        local ok,value=pcall(function()return game:GetService(name)end)
+        return ok and value or nil
+    end
+    local world=options.Workspace or workspace
+    local lighting=options.Lighting or service("Lighting")
+    local players=options.Players or service("Players")
+    local terrain=options.Terrain
+    if terrain==nil and world then pcall(function()terrain=world.Terrain end) end
+    local quality=options.QualitySettings
+    if quality==nil then pcall(function()quality=UserSettings():GetService("UserGameSettings")end) end
+    local enums=options.Enums or Enum
+    local spawn=options.Spawn or task.spawn
+    local wait=options.Wait or task.wait
+    local batchSize=math.clamp(tonumber(options.BatchSize) or 48,1,128)
+    local batchDelay=math.clamp(tonumber(options.BatchDelay) or 0.035,0,0.2)
+    local maxObjects=math.clamp(tonumber(options.MaxObjects) or 12000,1,30000)
+    local records=setmetatable({},{__mode="k"})
+    local pending=setmetatable({},{__mode="k"})
+    local queue,head={},1
+    local connections={}
+    local enabled,destroyed,running=false,false,false
+    local epoch,changed,modified,skipped,capped,errors=0,0,0,0,0,0
+    local lastError,status=nil,"ปิดลดกราฟิกแล้ว"
+    local protectedNames={mobs=true,npcs=true,characters=true,enemies=true,players=true,
+        effects=true,fx=true,vfx=true,projectiles=true,telegraphs=true,hitboxes=true,
+        ores=true,orenode=true,resources=true,markers=true,questmarkers=true,aoe=true}
+    local function publish(text)
+        if text then status=text end
+        state.LowGraphicsStatus=status
+        state.LowGraphicsChanged=changed
+    end
+    local function isA(node,class)
+        local ok,value=pcall(function()return node:IsA(class)end)
+        return ok and value==true
+    end
+    local function read(node,key)
+        return pcall(function()return node[key]end)
+    end
+    local function write(node,key,value)
+        local ok,problem=pcall(function()node[key]=value end)
+        if not ok then errors+=1 lastError=tostring(problem) end
+        return ok
+    end
+    local function apply(node,key,value,global)
+        if not node or node==false or value==nil then return end
+        local ok,current=read(node,key)
+        if not ok or current==value then return end
+        local record=records[node]
+        if not record then
+            if not global and changed>=maxObjects then capped+=1 return end
+            record={}
+        end
+        local entry
+        for i=1,#record,3 do if record[i]==key then entry=i break end end
+        if not write(node,key,value) then return end
+        if not records[node] then records[node]=record changed+=1 end
+        if entry then
+            -- A native change between passes becomes the new value to restore.
+            record[entry+1],record[entry+2]=current,value
+        else
+            table.insert(record,key)table.insert(record,current)table.insert(record,value)
+            modified+=1
+        end
+    end
+    local function restore(node,record)
+        for i=1,#record,3 do
+            local ok,current=read(node,record[i])
+            -- Do not overwrite a newer value supplied by the game or another setting.
+            if ok and current==record[i+2] then write(node,record[i],record[i+1]) end
+            modified-=1
+        end
+        records[node]=nil changed=math.max(0,changed-1)
+    end
+    local function within(node,root)
+        if not node or not root then return false end
+        local cursor=node
+        for _=1,64 do
+            if cursor==root then return true end
+            if not cursor then return false end
+            local ok,parent=read(cursor,"Parent")
+            if not ok then return false end
+            cursor=parent
+        end
+        return false
+    end
+    local function protected(node)
+        local camera=world and world.CurrentCamera
+        local cursor=node
+        for _=1,64 do
+            if cursor==world then return false end
+            if not cursor or cursor==camera then return true end
+            local name=string.lower(tostring(cursor.Name or ""))
+            if protectedNames[name] or string.find(name,"telegraph",1,true)
+                or string.find(name,"indicator",1,true) or string.find(name,"hitbox",1,true)
+                or string.find(name,"marker",1,true) or string.find(name,"attack",1,true)
+                or string.find(name,"ability",1,true) or string.find(name,"skill",1,true)
+                or string.find(name,"danger",1,true) or string.find(name,"warning",1,true) then return true end
+            if isA(cursor,"Tool") or isA(cursor,"Accessory") then return true end
+            if isA(cursor,"Model") then
+                local ok,h=pcall(function()return cursor:FindFirstChildOfClass("Humanoid")end)
+                if ok and h then return true end
+                for _,attribute in {"MobKind","OreKind","QuestId","TeleportId"} do
+                    local success,value=pcall(function()return cursor:GetAttribute(attribute)end)
+                    if success and value~=nil then return true end
+                end
+                if players then
+                    local success,player=pcall(function()return players:GetPlayerFromCharacter(cursor)end)
+                    if success and player then return true end
+                end
+            end
+            cursor=cursor.Parent
+        end
+        return true
+    end
+    local function staticPart(node)
+        return node and node~=terrain and not isA(node,"Terrain") and isA(node,"BasePart") and node.Anchored==true
+            and node.Transparency<1 and not protected(node)
+    end
+    local function process(node)
+        if isA(node,"PostEffect") and within(node,lighting) then
+            apply(node,"Enabled",false)
+        elseif isA(node,"BasePart") and staticPart(node) then
+            apply(node,"CastShadow",false)
+            apply(node,"Material",enums.Material.SmoothPlastic)
+        elseif isA(node,"Decal") and staticPart(node.Parent) then
+            apply(node,"Transparency",1)
+        else skipped+=1 end
+    end
+    local function candidate(node)
+        return isA(node,"BasePart") or isA(node,"Decal") or isA(node,"PostEffect")
+    end
+    local function disconnect()
+        for _,connection in connections do pcall(function()connection:Disconnect()end) end
+        table.clear(connections)
+    end
+    local function clearQueue()
+        table.clear(queue) table.clear(pending) head=1
+    end
+    local function runApply(token,initial)
+        local processed=0
+        local function step(node)
+            if token~=epoch or not enabled or destroyed then return false end
+            process(node) processed+=1
+            if processed%batchSize==0 then
+                publish()wait(batchDelay)
+                if token~=epoch or not enabled or destroyed then return false end
+            end
+            return true
+        end
+        if initial then
+            apply(lighting,"GlobalShadows",false,true)
+            apply(quality,"SavedQualityLevel",enums.SavedQualitySetting.QualityLevel1,true)
+            apply(terrain,"WaterWaveSize",0,true)apply(terrain,"WaterWaveSpeed",0,true)
+            apply(terrain,"WaterReflectance",0,true)apply(terrain,"WaterTransparency",1,true)
+            -- Query only render candidates once. Added objects are handled by signals below.
+            for _,query in {{lighting,"PostEffect"},{world,"BasePart"},{world,"Decal"}} do
+                if token~=epoch or not enabled or destroyed then return end
+                local ok,items=pcall(function()return query[1]:QueryDescendants(query[2])end)
+                if ok then
+                    for _,node in items do if not step(node) then return end end
+                elseif query[1] then errors+=1 lastError=tostring(items) end
+            end
+        end
+        while head<=#queue do
+            local node=queue[head]head+=1
+            -- Retain array slots until drained so Lua's length operator remains stable.
+            pending[node]=nil
+            if not step(node) then return end
+        end
+        if token==epoch then
+            clearQueue()running=false
+            publish(capped>0 and "เปิดลดกราฟิกแล้ว · จำกัดจำนวนวัตถุเพื่อประหยัดแรม"
+                or errors>0 and "ลดกราฟิกบางส่วนแล้ว" or "เปิดลดกราฟิกแล้ว")
+        end
+    end
+    local function launch(initial)
+        if running then return end
+        running=true
+        local token=epoch
+        spawn(function()
+            local ok,problem=pcall(runApply,token,initial)
+            if token==epoch and not ok then
+                errors+=1 lastError=tostring(problem)running=false
+                publish("ลดกราฟิกบางส่วนแล้ว")
+            end
+        end)
+    end
+    local function added(node)
+        if not enabled or destroyed or pending[node] or not candidate(node) then return end
+        pending[node]=true table.insert(queue,node)launch(false)
+    end
+    local function removing(node)
+        local record=records[node]
+        if record then restore(node,record) end
+    end
+    local controller={}
+    function controller.SetEnabled(value)
+        value=value==true
+        if destroyed then return false end
+        state.LowGraphics=value
+        if value==enabled then return true end
+        enabled=value epoch+=1 running=false
+        disconnect()clearQueue()
+        if enabled then
+            skipped,capped,errors,lastError=0,0,0,nil
+            publish("กำลังลดกราฟิก…")
+            for _,root in {world,lighting} do
+                local ok,connection=pcall(function()return root.DescendantAdded:Connect(added)end)
+                if ok then table.insert(connections,connection) end
+                local removed,removal=pcall(function()return root.DescendantRemoving:Connect(removing)end)
+                if removed then table.insert(connections,removal) end
+            end
+            launch(true)
+        else
+            publish("กำลังคืนภาพเดิม…")
+            local token=epoch
+            spawn(function()
+                local processed=0
+                for node,record in records do
+                    if token~=epoch or enabled or destroyed then return end
+                    restore(node,record)processed+=1
+                    if processed%batchSize==0 then publish()wait(batchDelay) end
+                end
+                if token==epoch then publish("ปิดลดกราฟิกแล้ว") end
+            end)
+        end
+        return true
+    end
+    function controller.Snapshot()
+        return {Enabled=enabled,Destroyed=destroyed,Status=status,Changed=changed,
+            Properties=modified,Skipped=skipped,Capped=capped,Errors=errors,LastError=lastError}
+    end
+    function controller.Destroy()
+        if destroyed then return end
+        destroyed=true enabled=false epoch+=1 running=false
+        disconnect()clearQueue()
+        -- Finish before a replacement controller starts, so reloads cannot race restores.
+        for node,record in records do restore(node,record) end
+        publish("คืนภาพเดิมแล้ว")
+    end
+    publish()
+    return controller
+end
+
 local initialMode = previousSettings.Mode == "Quest" and "Quest" or previousSettings.Mode == "Sell" and "Sell" or previousSettings.Mode == "Craft" and "Craft" or previousSettings.Mode == "Mining" and "Mining" or "Combat"
 local initialMob = previousSettings.SelectedMob or "Frenzy Boar"
 local initialStoneQuest = previousSettings.SelectedStoneQuest
@@ -1074,10 +1322,10 @@ local state = {
     AutoTownWarp = previousSettings.AutoTownWarp ~= false, Warps = 0,
     Status = "พร้อมใช้งาน", Target = nil, Distance = 0,
     Attacks = 0, Kills = 0, DamageObserved = 0, PathStatus = "idle", LastError = nil,
-    MenuVisible = true, Version = "2.26", Connections = {},
+    MenuVisible = true, Version = "2.27", Connections = {},
     PersistenceEnabled=previousSettings.PersistenceEnabled~=false, AutoJoinWorld=previousSettings.AutoJoinWorld~=false, AutoResumeFarm=previousSettings.AutoResumeFarm~=false,
     LastFloor=currentFloor, WorldOpen=false, FloorTravelling=false, PersistenceStatus=continuity.Store.Status,
-    SettingsOpen = false, MaterialPickerOpen = false, UiScale = previousSettings.UiScale or 1,
+    LowGraphics = previousSettings.LowGraphics ~= false, LowGraphicsStatus = "พร้อมลดกราฟิก", LowGraphicsChanged = 0, SettingsOpen = false, MaterialPickerOpen = false, UiScale = previousSettings.UiScale or 1,
     UiSearch = previousSettings.UiSearch or {Combat = "", Mining = "", Craft = "", Sell = ""},
     Travelling = false, TravelStatus = "", TravelDistance = 0,
     AutoRespawn = previousSettings.AutoRespawn ~= false, Respawning = false,
@@ -5741,6 +5989,11 @@ local function updateStatus()
     view.PaintButton(view.AntiAfkToggle, state.AntiAfk)
     view.AntiAfkStatus.Text = not state.AntiAfk and "ปิดการกัน AFK แล้ว" or state.AntiAfkError and "ส่งสัญญาณไม่สำเร็จ"
         or state.AntiAfkPulses > 0 and ("ส่งสัญญาณแล้ว " .. state.AntiAfkPulses .. " ครั้ง") or "ตรวจทุก 60 วินาที"
+    if view.LowGraphicsToggle then
+        view.LowGraphicsToggle.Text = state.LowGraphics and "เปิดอยู่" or "ปิดอยู่"
+        view.PaintButton(view.LowGraphicsToggle,state.LowGraphics)
+        view.LowGraphicsStatus.Text = state.LowGraphicsStatus or "ลดเงาและรายละเอียดฉาก"
+    end
     view.SizeButton.Text = "ขนาด " .. math.floor((view.Scale.Scale or 1)*100+0.5) .. "%"
     view.AutoPotionToggle.Text = state.AutoPotion and "เปิดอยู่" or "ปิดอยู่"
     view.PaintButton(view.AutoPotionToggle,state.AutoPotion)
@@ -5840,6 +6093,18 @@ function state.SetSkillsEnabled(enabled)
 end
 
 -- Shared anti-idle watchdog: independent of farming, character and camera lifetime.
+function state.SetLowGraphics(enabled)
+    if not state.Alive then return end
+    state.LowGraphics = enabled == true
+    if state.LowGraphicsController then state.LowGraphicsController.SetEnabled(state.LowGraphics) end
+    continuity.Save(state,true)
+    queueStatus()
+end
+function state.GetLowGraphicsStatus()
+    return state.LowGraphicsController and state.LowGraphicsController.Snapshot()
+        or {Enabled=false,Status=state.LowGraphicsStatus,Changed=0}
+end
+
 function state.SetAntiAfk(enabled)
     if not state.Alive then return end
     state.AntiAfk=enabled==true
@@ -6360,6 +6625,7 @@ end
 function state.Destroy()
     if state.Selling then state.ShowMenu(false) return end
     if potionController then potionController.Destroy() end
+    if state.LowGraphicsController then state.LowGraphicsController.Destroy() end
     state.CancelServiceTravel("ปิดระบบ • หยุดเดินแล้ว")
     state.SetEnabled(false)
     continuity.IdleSession.Destroy()
@@ -6936,9 +7202,15 @@ local function createGui()
     end
     view.Settings = make("ScrollingFrame", {Name = "SettingsContent", BackgroundTransparency = 1, Visible = false,
         Position = UDim2.fromOffset(12,92), Size = UDim2.fromOffset(280,306), BorderSizePixel = 0,
-        CanvasSize = UDim2.fromOffset(0,422), ScrollBarThickness = 3, ScrollBarImageColor3 = theme.Accent,
+        CanvasSize = UDim2.fromOffset(0,494), ScrollBarThickness = 3, ScrollBarImageColor3 = theme.Accent,
         ScrollingDirection = Enum.ScrollingDirection.Y, ClipsDescendants = true},panel)
-    local potionCard = card("AutoPotion",0,0,276,104,view.Settings)
+    local graphicsCard = card("LowGraphics",0,0,276,62,view.Settings)
+    text("Title","ลดกราฟิก",12,6,130,22,graphicsCard,13,theme.AccentLight).Font = Enum.Font.GothamBold
+    view.LowGraphicsToggle = button("",UDim2.fromOffset(112,28),UDim2.fromOffset(156,5),graphicsCard)
+    view.LowGraphicsToggle.Name,view.LowGraphicsToggle.TextSize = "ToggleLowGraphics",11
+    connect(view.LowGraphicsToggle.Activated,function()state.SetLowGraphics(not state.LowGraphics)end)
+    view.LowGraphicsStatus = text("Status","",12,35,252,20,graphicsCard,10,theme.Muted)
+    local potionCard = card("AutoPotion",0,72,276,104,view.Settings)
     text("Title","ยาอัตโนมัติ",12,7,152,22,potionCard,13,theme.AccentLight).Font = Enum.Font.GothamBold
     view.AutoPotionToggle = button("",UDim2.fromOffset(90,26),UDim2.fromOffset(176,7),potionCard)
     view.AutoPotionToggle.Name,view.AutoPotionToggle.TextSize = "ToggleAutoPotion",11
@@ -6956,7 +7228,7 @@ local function createGui()
     connect(raiseHealth.Activated,function()state.SetPotionThreshold(state.PotionThreshold+5)end)
     view.PotionStatus = text("PotionStatus","",12,69,254,28,potionCard,10,theme.Muted)
     view.PotionStatus.TextTruncate,view.PotionStatus.TextWrapped = Enum.TextTruncate.None,true
-    local discord = card("Discord",0,114,276,170,view.Settings)
+    local discord = card("Discord",0,186,276,170,view.Settings)
     local discordTitle = text("Title","DISCORD  /  EVERNIGHT",12,10,256,20,discord,13,theme.Text)
     discordTitle.Font = Enum.Font.GothamBold
     text("Caption","แร่ที่ได้ + ทุกสายที่เลเวลอัพ",12,32,256,16,discord,11,theme.Muted)
@@ -6977,22 +7249,22 @@ local function createGui()
     connect(testWebhook.Activated,function()state.TestWebhook()updateStatus()end)
     webhookLabel = text("WebhookStatus","",12,128,256,32,discord,11,theme.Frost)
     webhookLabel.TextTruncate,webhookLabel.TextWrapped = Enum.TextTruncate.None,true
-    local respawnCard = card("Respawn",0,292,276,38,view.Settings)
+    local respawnCard = card("Respawn",0,364,276,38,view.Settings)
     text("Title","เกิดใหม่แบบฟรี",12,2,136,18,respawnCard,12)
     text("Caption","ไม่ใช้ Robux · EXP ตามเกม",12,19,136,15,respawnCard,9,theme.Muted)
     view.RespawnSettings = button("",UDim2.fromOffset(112,28),UDim2.fromOffset(156,5),respawnCard)
     view.RespawnSettings.Name = "AutoRespawn"
     connect(view.RespawnSettings.Activated,function()state.SetAutoRespawn(not state.AutoRespawn)end)
-    local antiAfkCard = card("AntiAfk",0,338,276,38,view.Settings)
+    local antiAfkCard = card("AntiAfk",0,410,276,38,view.Settings)
     text("Title","กัน AFK",12,2,136,18,antiAfkCard,12)
     view.AntiAfkStatus = text("Status","",12,19,136,15,antiAfkCard,9,theme.Muted)
     view.AntiAfkToggle = button("",UDim2.fromOffset(112,28),UDim2.fromOffset(156,5),antiAfkCard)
     view.AntiAfkToggle.Name = "ToggleAntiAfk"
     connect(view.AntiAfkToggle.Activated,function()state.SetAntiAfk(not state.AntiAfk)end)
-    view.SizeButton = button("",UDim2.fromOffset(132,30),UDim2.fromOffset(0,388),view.Settings)
+    view.SizeButton = button("",UDim2.fromOffset(132,30),UDim2.fromOffset(0,460),view.Settings)
     view.SizeButton.Name = "CycleUiScale"
     connect(view.SizeButton.Activated,state.CycleUiScale)
-    local back = button("กลับไปใช้งาน",UDim2.fromOffset(136,30),UDim2.fromOffset(140,388),view.Settings)
+    local back = button("กลับไปใช้งาน",UDim2.fromOffset(136,30),UDim2.fromOffset(140,460),view.Settings)
     back.Name = "BackToControls"
     connect(back.Activated,function()state.ShowSettings(false)end)
     view.SkillButton = button("สกิล",UDim2.fromOffset(98,24),UDim2.fromOffset(182,30),view.Main)
@@ -8271,6 +8543,8 @@ local function step()
     navigate(c, h, root, target, distance, targetRoot)
 end
 
+state.LowGraphicsController = createLowGraphicsController(state)
+state.LowGraphicsController.SetEnabled(state.LowGraphics)
 combat = resolveCombat()
 mining = resolveMining()
 crafting = resolveCrafting()
