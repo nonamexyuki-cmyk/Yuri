@@ -1,4 +1,4 @@
--- Evernight v2.42: self-contained installer and runner.
+-- Evernight v2.49: self-contained installer and runner.
 local source=[====[
 -- Persistent preferences and teleport continuation, confined to Project Eternity.
 local continuity = (function()
@@ -28,7 +28,7 @@ local function createPersistentSettings(options)
         "AutoRespawn", "AntiAfk", "SkillsEnabled", "AutoPotion", "MenuVisible", "WebhookEnabled", "LowGraphics", "SecretRoomHover", "SecretRoomLoopEnabled", "UseCurrentServer"}
     local modes = {Combat = true, Mining = true, Craft = true, Sell = true, Quest = true, SecretRoom = true}
     local oreKinds = {CaveSteelFirst = true, SteelOre = true, IronOre = true, CrystalliteOre = true,
-        CrystalliteArea1 = true, CrystalliteArea2 = true}
+        CrystalliteArea1 = true, CrystalliteArea2 = true, Floor3Any = true, ObsidianOre = true, VerditeOre = true}
     local stoneQuests = {All = true, m_forge = true, m_gallows = true, nepenthesHuntQuest = true,
         floor2MinibossApeQuest = true, floor2EliteTaurusQuest = true}
     local searches = {"Combat", "Mining", "Craft", "Sell", "Quest", "World"}
@@ -99,7 +99,7 @@ local function createPersistentSettings(options)
         if finite(value.CraftQuantity) then result.CraftQuantity = math.clamp(math.floor(value.CraftQuantity), 1, 99) end
         if finite(value.UiScale) then result.UiScale = math.clamp(value.UiScale, 0.65, 1.1) end
         if finite(value.SecretRoomHoverHeight) then result.SecretRoomHoverHeight = math.clamp(math.floor(value.SecretRoomHoverHeight), 4, 10) end
-        if value.LastFloor==1 or value.LastFloor==2 then result.LastFloor=value.LastFloor end
+        if value.LastFloor==1 or value.LastFloor==2 or value.LastFloor==3 then result.LastFloor=value.LastFloor end
         result.SkillSelection = booleanMap(value.SkillSelection, 256, 160)
         result.SellLocks = booleanMap(value.SellLocks, 1000, 100)
         if type(value.UiSearch) == "table" then
@@ -446,7 +446,7 @@ function api.StartServerSelection(state)
     return true
 end
     local allowed={[13725495850]=true,[108438460215241]=true,[75952228303182]=true,
-        [98460737039314]=true,[13761991508]=true,[76652994877247]=true}
+        [115792564742945]=true,[98460737039314]=true,[13761991508]=true,[76652994877247]=true}
     api.Allowed=allowed[game.PlaceId]==true
     api.IsLanding=game.PlaceId==13725495850
     if api.Allowed then
@@ -773,7 +773,7 @@ end
             task.spawn(function()
                 if not game:IsLoaded() then game.Loaded:Wait() end
                 local allowed={[13725495850]=true,[108438460215241]=true,[75952228303182]=true,
-                    [98460737039314]=true,[13761991508]=true,[76652994877247]=true}
+                    [115792564742945]=true,[98460737039314]=true,[13761991508]=true,[76652994877247]=true}
                 if not allowed[game.PlaceId] or getgenv().EvernightContinuationBooted then return end
                 getgenv().EvernightContinuationBooted=true
                 local ok,problem=pcall(function()
@@ -824,8 +824,8 @@ local function nativeLandingStep(preferredFloor)
         return result("not_landing", "The native landing menu is not active in this place.")
     end
     local requested = preferredFloor ~= nil and tonumber(preferredFloor) or nil
-    if preferredFloor ~= nil and requested ~= 1 and requested ~= 2 then
-        return result("invalid_floor", "Choose Floor 1 or Floor 2.")
+    if preferredFloor ~= nil and requested ~= 1 and requested ~= 2 and requested ~= 3 then
+        return result("invalid_floor", "Choose Floor 1, Floor 2 or Floor 3.")
     end
 
     local playerGui = player and player:FindFirstChildOfClass("PlayerGui")
@@ -915,7 +915,7 @@ local function nativeLandingStep(preferredFloor)
             return result("manual_customization", "This save still requires character setup; automatic entry is paused.", {Slot = slot})
         end
         local floor = requested or tonumber(data.floors and data.floors.last) or 1
-        if floor ~= 1 and floor ~= 2 then
+        if floor ~= 1 and floor ~= 2 and floor ~= 3 then
             return result("invalid_floor", "The saved floor is not available in the native landing menu.", {Slot = slot})
         end
         if slot == 4 and floor ~= 1 then
@@ -1114,7 +1114,7 @@ end
 continuity.Apply(previousSettings)
 local inheritedRestores = {}
 for _, old in filtergc("table", {Keys = {"Alive", "Enabled", "Selected", "SetEnabled", "Destroy"}}, false) do
-    if old.Version == "2.42" or old.Version == "2.41" or old.Version == "2.40" or old.Version == "2.39" or old.Version == "2.38" or old.Version == "2.37" or old.Version == "2.36" or old.Version == "2.35" or old.Version == "2.34" or old.Version == "2.33" or old.Version == "2.32" or old.Version == "2.31" or old.Version == "2.30" or old.Version == "2.29" or old.Version == "2.28" or old.Version == "2.27" or old.Version == "2.26" or old.Version == "2.25" or old.Version == "2.24" or old.Version == "2.23" or old.Version == "2.22" or old.Version == "2.21" or old.Version == "2.20" or old.Version == "2.19" or old.Version == "2.18" or old.Version == "2.17" or old.Version == "2.16" or old.Version == "1.0" or old.Version == "1.1" or old.Version == "1.2" or old.Version == "1.3" or old.Version == "1.4" or old.Version == "1.5" or old.Version == "1.6" or old.Version == "1.7" or old.Version == "1.8" or old.Version == "1.9" or old.Version == "2.0" or old.Version == "2.1" or old.Version == "2.2" or old.Version == "2.3" or old.Version == "2.4" or old.Version == "2.5" or old.Version == "2.6" or old.Version == "2.7" or old.Version == "2.8" or old.Version == "2.9" or old.Version == "2.10" or old.Version == "2.11" or old.Version == "2.12" or old.Version == "2.13" or old.Version == "2.14" or old.Version == "2.15" then
+    if old.Version == "2.49" or old.Version == "2.48" or old.Version == "2.47" or old.Version == "2.46" or old.Version == "2.45" or old.Version == "2.44" or old.Version == "2.43" or old.Version == "2.42" or old.Version == "2.41" or old.Version == "2.40" or old.Version == "2.39" or old.Version == "2.38" or old.Version == "2.37" or old.Version == "2.36" or old.Version == "2.35" or old.Version == "2.34" or old.Version == "2.33" or old.Version == "2.32" or old.Version == "2.31" or old.Version == "2.30" or old.Version == "2.29" or old.Version == "2.28" or old.Version == "2.27" or old.Version == "2.26" or old.Version == "2.25" or old.Version == "2.24" or old.Version == "2.23" or old.Version == "2.22" or old.Version == "2.21" or old.Version == "2.20" or old.Version == "2.19" or old.Version == "2.18" or old.Version == "2.17" or old.Version == "2.16" or old.Version == "1.0" or old.Version == "1.1" or old.Version == "1.2" or old.Version == "1.3" or old.Version == "1.4" or old.Version == "1.5" or old.Version == "1.6" or old.Version == "1.7" or old.Version == "1.8" or old.Version == "1.9" or old.Version == "2.0" or old.Version == "2.1" or old.Version == "2.2" or old.Version == "2.3" or old.Version == "2.4" or old.Version == "2.5" or old.Version == "2.6" or old.Version == "2.7" or old.Version == "2.8" or old.Version == "2.9" or old.Version == "2.10" or old.Version == "2.11" or old.Version == "2.12" or old.Version == "2.13" or old.Version == "2.14" or old.Version == "2.15" then
         old.Reloading=true
         if old.Enabled or old.AutoResumePending then old.FloorTravelResumeEnabled=true end
         local cleanup = task.spawn(function() pcall(old.Destroy) end)
@@ -1136,7 +1136,7 @@ local UIS = game:GetService("UserInputService")
 local RunService = game:GetService("RunService")
 local Pathfinding = game:GetService("PathfindingService")
 local player = Players.LocalPlayer
-local currentFloor = tonumber(require(game:GetService("ReplicatedStorage").Shared.PlaceConfig).storyFloor) or 1
+local currentFloor = game.PlaceId == 115792564742945 and 3 or tonumber(require(game:GetService("ReplicatedStorage").Shared.PlaceConfig).storyFloor) or 1
 local function normalizeFloor1QuestOrder(value)
     local defaults={"m_forge","m_gallows","nepenthesHuntQuest"}
     local allowed={m_forge=true,m_gallows=true,nepenthesHuntQuest=true}
@@ -1638,7 +1638,9 @@ if currentFloor == 2 then
     if initialStoneQuest ~= "floor2MinibossApeQuest" and initialStoneQuest ~= "floor2EliteTaurusQuest" then initialStoneQuest = "All" end
 elseif initialStoneQuest ~= "m_forge" and initialStoneQuest ~= "m_gallows" and initialStoneQuest ~= "nepenthesHuntQuest" then initialStoneQuest = "All" end
 local initialOre = previousSettings.SelectedOre
-if currentFloor == 2 then
+if currentFloor == 3 then
+    if initialOre ~= "Floor3Any" and initialOre ~= "ObsidianOre" and initialOre ~= "VerditeOre" then initialOre = "Floor3Any" end
+elseif currentFloor == 2 then
     if initialOre ~= "CrystalliteOre" and initialOre ~= "CrystalliteArea1" and initialOre ~= "CrystalliteArea2" then initialOre = "CrystalliteOre" end
 else
     if initialOre ~= "CaveSteelFirst" and initialOre ~= "SteelOre" and initialOre ~= "IronOre" then initialOre = "CaveSteelFirst" end
@@ -1651,7 +1653,7 @@ local state = {
     AutoTownWarp = previousSettings.AutoTownWarp ~= false, Warps = 0,
     Status = "พร้อมใช้งาน", Target = nil, Distance = 0,
     Attacks = 0, Kills = 0, DamageObserved = 0, PathStatus = "idle", LastError = nil,
-    MenuVisible = true, Version = "2.42", Connections = {},
+    MenuVisible = true, Version = "2.49", Connections = {},
     PersistenceEnabled=previousSettings.PersistenceEnabled~=false, AutoJoinWorld=previousSettings.AutoJoinWorld~=false, AutoResumeFarm=previousSettings.AutoResumeFarm~=false,
     UseCurrentServer=previousSettings.UseCurrentServer~=false, ServerSelectionExcluded=type(previousSettings.ServerSelectionExcluded)=="table" and previousSettings.ServerSelectionExcluded or {}, LastFloor=currentFloor, WorldOpen=false, FloorTravelling=false, PersistenceStatus=continuity.Store.Status,
     LowGraphics = previousSettings.LowGraphics ~= false, LowGraphicsStatus = "พร้อมลดกราฟิก", LowGraphicsChanged = 0, SettingsOpen = false, MaterialPickerOpen = false, UiScale = previousSettings.UiScale or 1,
@@ -1984,7 +1986,20 @@ local steelCaveFloor = Vector3.new(-2871.73, 192.34, -2902.88)
 
 -- Accept only real, tagged nodes in the observed mining areas of the current floor.
 -- Floor 1 retains the user's strict Steel/Iron cave boundary.
+function state.OreFolder()
+    local floor = currentFloor == 3 and workspace:FindFirstChild("Floor3")
+    return floor and floor:FindFirstChild("VerditeDeposits") or workspace:FindFirstChild("OreNodes")
+end
+-- Floor 3 uses its observed VerditeDeposits folder rather than OreNodes.
+function state.IsFloor3Ore(m)
+    local folder = state.OreFolder()
+    local kind = m and m:GetAttribute("OreType")
+    return currentFloor == 3 and folder ~= nil and m ~= nil and m:IsA("Model")
+        and m:IsDescendantOf(folder) and (kind == "ObsidianOre" or kind == "VerditeOre")
+        and game:GetService("CollectionService"):HasTag(m,"OreNode") and mobRoot(m) ~= nil
+end
 local function isCaveOre(m)
+    if currentFloor == 3 then return state.IsFloor3Ore(m) end
     if not m or not m.Parent then return false end
     local kind = m:GetAttribute("OreType")
     local folder = workspace:FindFirstChild("OreNodes")
@@ -2004,6 +2019,7 @@ end
 
 local function isSelectedOre(m)
     if not isCaveOre(m) then return false end
+    if currentFloor == 3 then return state.Selected == "Floor3Any" or m:GetAttribute("OreType") == state.Selected end
     if currentFloor == 2 then
         if state.Selected == "CrystalliteArea1" then return m.Parent.Name == "Area1" end
         if state.Selected == "CrystalliteArea2" then return m.Parent.Name == "Area2" end
@@ -2013,6 +2029,9 @@ local function isSelectedOre(m)
 end
 
 local function oreChoiceName(name)
+    if name == "Floor3Any" then return "แร่ชั้น 3 · ใกล้ที่สุด" end
+    if name == "ObsidianOre" then return "Obsidian" end
+    if name == "VerditeOre" then return "Verdite" end
     if stoneQuestUiChoices[name] then return stoneQuestChoiceLabel(name) end
     if name == "CaveSteelFirst" then return "Steel ก่อน → Iron (ในถ้ำ)" end
     if name == "SteelOre" then return "Steel (ในถ้ำ)" end
@@ -2027,6 +2046,7 @@ local function valid(m)
     if state.Mode == "SecretRoom" then return state.SecretRoomController and state.SecretRoomController.IsTarget(m) or false end
     if state.Mode == "Quest" then return forgeQuest and forgeQuest.IsTarget(m) or false end
     if state.Mode == "Mining" then
+        if state.MiningDefenseTarget == m and state.IsMiningThreat then return state.IsMiningThreat(m) end
         return isSelectedOre(m)
             and game:GetService("CollectionService"):HasTag(m, "OreNode")
             and m:GetAttribute("MinedOut") ~= true and m:FindFirstChild("Ore") ~= nil
@@ -2047,7 +2067,7 @@ local function questCombatDelta(root,target,targetRoot)
     local roomTarget=state.Mode=="SecretRoom" and state.SecretRoomController
         and state.SecretRoomController.IsTarget(target) and targetRoot:IsA("BasePart")
         and math.max(targetRoot.Size.X,targetRoot.Size.Z)>=6
-    if (roomTarget or state.Mode=="Quest" and kind and target and target:GetAttribute("MobKind")==kind)
+    if (roomTarget or state.Mode=="Mining" and state.MiningDefenseTarget==target and targetRoot:IsA("BasePart") and math.max(targetRoot.Size.X,targetRoot.Size.Z)>=6 or state.Mode=="Quest" and kind and target and target:GetAttribute("MobKind")==kind)
         and targetRoot:IsA("BasePart") then
         return targetRoot:GetClosestPointOnSurface(root.Position)-root.Position,true
     end
@@ -2062,7 +2082,7 @@ local function questCombatApproach(c,root,target,targetRoot,planning)
     local roomTarget=state.Mode=="SecretRoom" and state.SecretRoomController
         and state.SecretRoomController.IsTarget(target) and targetRoot and targetRoot:IsA("BasePart")
         and math.max(targetRoot.Size.X,targetRoot.Size.Z)>=6
-    if (not roomTarget and (state.Mode~="Quest" or not kind or not target or target:GetAttribute("MobKind")~=kind))
+    if (not roomTarget and not (state.Mode=="Mining" and state.MiningDefenseTarget==target) and (state.Mode~="Quest" or not kind or not target or target:GetAttribute("MobKind")~=kind))
         or not root or not targetRoot or not targetRoot:IsA("BasePart") then return nil end
     local position=root.Position
     local center=targetRoot.Position
@@ -2139,6 +2159,7 @@ do
         h.AutoRotate=not nativeHeld
     end
     function motionController.Step(dt,focused)
+        if state.Enabled and state.Mode=="Mining" and os.clock()<(state.MiningWaterDashUntil or 0) then motionController.Release() return end
         local active=state.Alive and (state.Enabled or state.Travelling)
         local _,h,root=character()
         -- Ground path waypoints use the same frame writer as normal navigation.
@@ -2352,7 +2373,7 @@ local function resolveMining()
     assert(equip and equip:IsA("RemoteEvent") and unequip and unequip:IsA("RemoteEvent"), "ไม่พบคำสั่งสวมอุปกรณ์ของเกม")
 
     local pickaxeTiers = {IronPickaxe = 1, CrystallitePickaxe = 2, ObsidianPickaxe = 3, VerditePickaxe = 4}
-    local oreTiers = {IronOre = 1, SteelOre = 1, KoboldOre = 1, CrystalliteOre = 2, ObsidianOre = 3, VerditeOre = 4}
+    local oreTiers = {IronOre = 1, SteelOre = 1, KoboldOre = 1, CrystalliteOre = 2, ObsidianOre = 3, VerditeOre = 3}
     local api = {}
 
     local function currentEquipment()
@@ -2375,6 +2396,7 @@ local function resolveMining()
 
     function api.RequiredTier(ore)
         local kind = typeof(ore) == "Instance" and ore:GetAttribute("OreType") or ore
+        if kind == "Floor3Any" then return 3 end
         if kind == "CaveSteelFirst" then return 1 end
         if kind == "CrystalliteArea1" or kind == "CrystalliteArea2" then return 2 end
         return oreTiers[kind] or math.huge
@@ -2385,6 +2407,7 @@ local function resolveMining()
         local drops = {IronOre = "IronIngot", SteelOre = "SteelIngot", KoboldOre = "KoboldBar",
             CrystalliteOre = "Crystallite", ObsidianOre = "Obsidian", VerditeOre = "Verdite"}
         if kind == "CrystalliteArea1" or kind == "CrystalliteArea2" then kind = "CrystalliteOre" end
+        if kind == "Floor3Any" then return gameState.count("Obsidian") + gameState.count("Verdite") end
         return gameState.count(drops[kind] or kind)
     end
 
@@ -2416,6 +2439,14 @@ local function resolveMining()
             and character:GetAttribute("WeaponType") == nil and character:GetAttribute("Tool") == "Pickaxe"
     end
 
+    function api.EquipDefense(saved)
+        if currentEquipment().weapon then return true end
+        if type(saved) == "table" and saved.weapon and gameState.findItem(saved.weapon) then
+            equip:FireServer(saved.weapon)
+            return true
+        end
+        return false
+    end
     function api.Ready()
         return api.Equipped() and player.Character:GetAttribute("ToolDrawn") == true
     end
@@ -3461,7 +3492,7 @@ local function resolveAutoSkills()
         local targetRoot = target and mobRoot(target)
         local id = native.skillForSlot(row.Slot)
         if not state.Alive or not state.Enabled or not state.SkillsEnabled or not state.SkillSelection[row.Id]
-            or (state.Mode ~= "Combat" and state.Mode ~= "Quest" and state.Mode ~= "SecretRoom") or not c or not valid(target) or not targetRoot
+            or (state.Mode ~= "Combat" and state.Mode ~= "Quest" and state.Mode ~= "SecretRoom" and not (state.Mode == "Mining" and state.MiningDefenseTarget == target)) or not c or not valid(target) or not targetRoot
             or id ~= row.Id or (targetRoot.Position-root.Position).Magnitude > 14 or not native.CanCast(id,true) then return false end
         api.LastAttempt, api.Cursor = os.clock(), row.Slot
         local direction = targetRoot.Position-root.Position
@@ -5086,6 +5117,8 @@ do
     local url = validUrl(inherited.Url)
     local enabled = inherited.Enabled == true and url ~= nil
     local pendingSteel, pendingIron = countValue(inherited.PendingSteel), countValue(inherited.PendingIron)
+    local pendingObsidian, pendingVerdite = countValue(inherited.PendingObsidian), countValue(inherited.PendingVerdite)
+    local observedObsidian, observedVerdite
     local pendingCrystal = countValue(inherited.PendingCrystal)
     local sequence = countValue(inherited.Sequence)
     -- Snapshot every progression entry, including weapon proficiencies and professions.
@@ -5175,6 +5208,7 @@ do
     local function publish()
         state.WebhookEnabled, state.WebhookConfigured = enabled, url ~= nil
         state.WebhookPendingSteel, state.WebhookPendingIron = pendingSteel, pendingIron
+        state.WebhookPendingObsidian, state.WebhookPendingVerdite = pendingObsidian, pendingVerdite
         state.WebhookPendingCrystal = pendingCrystal
         state.WebhookPendingLevels = levelCount(pendingLevels)
         state.WebhookLevelSnapshot = copyLevels(observedLevels)
@@ -5190,10 +5224,10 @@ do
             end
         end
         -- Each ore is independent: missing Floor 1 data cannot block Floor 2 mining.
-        return read("SteelOre"), read("IronOre"), read("CrystalliteOre")
+        return read("SteelOre"), read("IronOre"), read("CrystalliteOre"), read("ObsidianOre"), read("VerditeOre")
     end
     local function snapshot()
-        observedSteel, observedIron, observedCrystal = stocks()
+        observedSteel, observedIron, observedCrystal, observedObsidian, observedVerdite = stocks()
     end
     cancelWebhookRequest = function()
         epoch += 1
@@ -5216,7 +5250,7 @@ do
 
     function state.GetWebhookSettings()
         observeLevels(enabled)
-        return {Url = url, Enabled = enabled, PendingSteel = pendingSteel, PendingIron = pendingIron, PendingCrystal = pendingCrystal, Sequence = sequence,
+        return {Url = url, Enabled = enabled, PendingSteel = pendingSteel, PendingIron = pendingIron, PendingCrystal = pendingCrystal, PendingObsidian = pendingObsidian, PendingVerdite = pendingVerdite, Sequence = sequence,
             PendingLevels = copyEvents(pendingLevels), LevelSnapshot = copyLevels(observedLevels), LevelSequence = levelSequence}
     end
     function state.ConfigureWebhook(value)
@@ -5345,6 +5379,8 @@ do
                     pendingSteel = math.max(0, pendingSteel - current.Steel)
                     pendingIron = math.max(0, pendingIron - current.Iron)
                     pendingCrystal = math.max(0, pendingCrystal - current.Crystal)
+                    pendingObsidian = math.max(0, pendingObsidian - (current.Obsidian or 0))
+                    pendingVerdite = math.max(0, pendingVerdite - (current.Verdite or 0))
                     local sentIds, remaining = {}, {}
                     for _, event in current.Levels do sentIds[event.Id] = true end
                     for _, event in pendingLevels do
@@ -5355,7 +5391,7 @@ do
                 state.WebhookSent += 1
                 local sentEmbed = type(body.embeds) == "table" and body.embeds[1]
                 state.WebhookLastSent = {Steel = current.Steel, Iron = current.Iron, Crystal = current.Crystal,
-                    Crystallite = current.Crystal, Floor = current.Floor, Test = current.Test, MessageId = body.id,
+                    Crystallite = current.Crystal, Obsidian = current.Obsidian or 0, Verdite = current.Verdite or 0, Floor = current.Floor, Test = current.Test, MessageId = body.id,
                     Levels = copyEvents(current.Levels), LevelCount = levelCount(current.Levels), Kind = current.Kind,
                     RichEmbed = type(sentEmbed) == "table", Title = sentEmbed and sentEmbed.title, Color = sentEmbed and sentEmbed.color,
                     HasImage = type(sentEmbed) == "table" and type(sentEmbed.image) == "table",
@@ -5450,12 +5486,16 @@ do
     webhookStep = function()
         local now = os.clock()
         observeLevels(enabled)
-        local steel, iron, crystal = stocks()
+        local steel, iron, crystal, obsidian, verdite = stocks()
         if tracking and enabled then
+            if obsidian ~= nil and observedObsidian ~= nil then pendingObsidian += math.max(0, obsidian - observedObsidian) end
+            if verdite ~= nil and observedVerdite ~= nil then pendingVerdite += math.max(0, verdite - observedVerdite) end
             if steel ~= nil and observedSteel ~= nil then pendingSteel += math.max(0, steel - observedSteel) end
             if iron ~= nil and observedIron ~= nil then pendingIron += math.max(0, iron - observedIron) end
             if crystal ~= nil and observedCrystal ~= nil then pendingCrystal += math.max(0, crystal - observedCrystal) end
         end
+        if obsidian ~= nil then observedObsidian = obsidian end
+        if verdite ~= nil then observedVerdite = verdite end
         if steel ~= nil then observedSteel = steel end
         if iron ~= nil then observedIron = iron end
         if crystal ~= nil then observedCrystal = crystal end
@@ -5497,7 +5537,7 @@ do
             sendAttempt(job)
             return
         end
-        if not testQueued and (not enabled or now < nextBatchAt or (pendingSteel + pendingIron + pendingCrystal == 0 and #pendingLevels == 0)) then return end
+        if not testQueued and (not enabled or now < nextBatchAt or (pendingSteel + pendingIron + pendingCrystal + pendingObsidian + pendingVerdite == 0 and #pendingLevels == 0)) then return end
         sequence += 1
         local test = testQueued
         testQueued = false
@@ -5507,31 +5547,38 @@ do
             for index = 1, math.min(#pendingLevels, 18) do table.insert(levelBatch, pendingLevels[index]) end
         end
         local isLevelBatch = #levelBatch > 0
-        local reportFloor = tonumber(currentFloor) == 2 and 2 or 1
+        local reportFloor = tonumber(currentFloor) or 1
         if not test and not isLevelBatch then
             -- Backlog from the previous floor keeps its own location and ore fields.
             if reportFloor == 2 and pendingCrystal == 0 and pendingSteel + pendingIron > 0 then reportFloor = 1 end
             if reportFloor == 1 and pendingSteel + pendingIron == 0 and pendingCrystal > 0 then reportFloor = 2 end
+            if reportFloor == 3 and pendingObsidian + pendingVerdite == 0 then
+                reportFloor = pendingCrystal > 0 and 2 or 1
+            elseif reportFloor ~= 3 and pendingSteel + pendingIron + pendingCrystal == 0 and pendingObsidian + pendingVerdite > 0 then
+                reportFloor = 3
+            end
         end
         local amountSteel = (test or isLevelBatch or reportFloor ~= 1) and 0 or pendingSteel
         local amountIron = (test or isLevelBatch or reportFloor ~= 1) and 0 or pendingIron
         local amountCrystal = (test or isLevelBatch or reportFloor ~= 2) and 0 or pendingCrystal
-        local mode = reportFloor == 2 and "Crystallite"
+        local amountObsidian = (test or isLevelBatch or reportFloor ~= 3) and 0 or pendingObsidian
+        local amountVerdite = (test or isLevelBatch or reportFloor ~= 3) and 0 or pendingVerdite
+        local mode = reportFloor == 3 and "Obsidian / Verdite" or reportFloor == 2 and "Crystallite"
             or state.SelectedOre == "IronOre" and "Iron" or state.SelectedOre == "SteelOre" and "Steel" or "Steel ก่อน → Iron"
-        local location = reportFloor == 2 and "ชั้น 2" or "ชั้น 1 · ภายในถ้ำ"
+        local location = reportFloor == 3 and "ชั้น 3" or reportFloor == 2 and "ชั้น 2" or "ชั้น 1 · ภายในถ้ำ"
         local function oreField(name, gained, total)
             local inventory = total ~= nil and (oreNumber(total) .. " ชิ้น") or "ยังอ่านยอดไม่ได้"
             return {name = name, inline = true,
                 value = test and ("**" .. inventory .. "**\nยอดในกระเป๋าปัจจุบัน")
                     or ("**+" .. oreNumber(gained) .. " ชิ้น**\nในกระเป๋า `" .. inventory .. "`")}
         end
-        local oreFields = reportFloor == 2 and {oreField("💎  Crystallite", amountCrystal, crystal)}
+        local oreFields = reportFloor == 3 and {oreField("🌑  Obsidian", amountObsidian, obsidian), oreField("💚  Verdite", amountVerdite, verdite)} or reportFloor == 2 and {oreField("💎  Crystallite", amountCrystal, crystal)}
             or {oreField("⚔️  Steel", amountSteel, steel), oreField("⛏️  Iron", amountIron, iron)}
         local embed = {
             author = {name = "🌙 EVERNIGHT  /  ETERNITY"},
             title = test and "🌹 เชื่อมต่อ Evernight สำเร็จ" or "🌹 รายงานจากเหมือง",
             description = test and "**พร้อมแจ้งเตือนแร่และทุกเลเวลแล้ว**\nตัวละคร · ค่าสถานะ · ความชำนาญอาวุธ · อาชีพ\nข้อความทดสอบ — ไม่มีการขุดหรือใช้ไอเทมเพิ่ม"
-                or ("เก็บแร่เพิ่ม **" .. oreNumber(amountSteel + amountIron + amountCrystal) .. " ชิ้น**\n" .. mode .. " · " .. location),
+                or ("เก็บแร่เพิ่ม **" .. oreNumber(amountSteel + amountIron + amountCrystal + amountObsidian + amountVerdite) .. " ชิ้น**\n" .. mode .. " · " .. location),
             color = test and 0x9681BD or 0xBB305B,
             fields = oreFields,
             footer = {text = "❄️ EVERNIGHT • " .. player.Name .. "  /  " .. location .. "  /  " .. mode .. "  /  #" .. sequence},
@@ -5562,7 +5609,7 @@ do
             end
             embed.footer.text = "❄️ EVERNIGHT • " .. player.Name .. "  /  ทุกความก้าวหน้า  /  #" .. sequence
         end
-        job = attachArtwork({Url = url, Epoch = epoch, Test = test, Steel = amountSteel, Iron = amountIron, Crystal = amountCrystal, Floor = reportFloor,
+        job = attachArtwork({Url = url, Epoch = epoch, Test = test, Steel = amountSteel, Iron = amountIron, Crystal = amountCrystal, Obsidian = amountObsidian, Verdite = amountVerdite, Floor = reportFloor,
             Kind = test and "Test" or isLevelBatch and "Levels" or "Ore", Levels = copyEvents(levelBatch),
             Failures = 0, RateRetries = 0, Attempt = 0, DueAt = now}, embed)
         sendAttempt(job)
@@ -6485,7 +6532,7 @@ local function updateStatus()
             action, actionColor = "เปิดหน้าออโต้หินเพื่อเริ่ม", theme.Disabled
         end
     elseif state.Mode == "Mining" then
-        detail = (currentFloor == 2 and ("Crystallite +" .. uiNumber(state.CrystalliteGained))
+        detail = (currentFloor == 3 and ("Obsidian +" .. uiNumber(state.ObsidianGained or 0) .. "  ·  Verdite +" .. uiNumber(state.VerditeGained or 0)) or currentFloor == 2 and ("Crystallite +" .. uiNumber(state.CrystalliteGained))
             or ("Steel +" .. uiNumber(state.SteelGained) .. "  ·  Iron +" .. uiNumber(state.IronGained)))
             .. "\n" .. (state.SelectedOre == "CaveSteelFirst" and "เฉพาะในถ้ำ  ·  Steel มาก่อน Iron" or oreChoiceName(state.SelectedOre))
     else
@@ -6519,7 +6566,7 @@ local function updateStatus()
     warpButton.Text = state.AutoTownWarp and "วาร์ป: เปิด" or "วาร์ป: ปิด"
     view.Search.TextEditable = not state.Selling and not state.Crafting and not state.Travelling
     view.ClearSearch.Visible = view.Search.Text ~= ""
-    view.Search.PlaceholderText = state.Mode == "Sell" and "ค้นหาชื่ออาวุธ / รหัสชิ้น" or state.Mode == "Craft" and "ค้นหาชนิดอาวุธ" or state.Mode == "Mining" and (currentFloor == 2 and "ค้นหา Crystallite / เขตขุด" or "ค้นหา Steel / Iron") or "ค้นหามอนสเตอร์"
+    view.Search.PlaceholderText = state.Mode == "Sell" and "ค้นหาชื่ออาวุธ / รหัสชิ้น" or state.Mode == "Craft" and "ค้นหาชนิดอาวุธ" or state.Mode == "Mining" and (currentFloor == 3 and "ค้นหา Obsidian / Verdite" or currentFloor == 2 and "ค้นหา Crystallite / เขตขุด" or "ค้นหา Steel / Iron") or "ค้นหามอนสเตอร์"
     view.Main.Visible, view.Settings.Visible = not state.SettingsOpen and not (currentFloor == 2 and state.Mode == "Quest" and not state.QuestAutoPage), state.SettingsOpen
     questBrowser.Update()
     view.MaterialPopup.Visible = state.Mode == "Craft" and state.MaterialPickerOpen and not state.SettingsOpen
@@ -6791,7 +6838,7 @@ function state.SetEnabled(enabled)
         forgeQuest.Reset()
         if enabled then forgeQuest.CloseMenus() end
     end
-    if not enabled then if state.SecretRoomController then state.SecretRoomController.Stop() end cancelAction() motionController.Release() end
+    if not enabled then if state.ResetMiningGuard then state.ResetMiningGuard(false) end if state.SecretRoomController then state.SecretRoomController.Stop() end cancelAction() motionController.Release() end
     if state.Enabled == (enabled == true) then pcall(continuity.Save,state,true) return end
     if enabled then
         for _, previous in inheritedRestores do
@@ -6812,7 +6859,7 @@ function state.SetEnabled(enabled)
     if enabled and state.Mode == "Mining" then
         local item, tier = mining.Pickaxe()
         if not item then
-            state.Status = currentFloor == 2 and "ต้องมี Crystallite Pickaxe ขึ้นไป • ยังไม่ซื้อให้อัตโนมัติ" or "ยังไม่มี Pickaxe • Iron Pickaxe ราคา 500 Col"
+            state.Status = currentFloor == 3 and "ต้องมี Obsidian Pickaxe ขึ้นไป • ยังไม่ซื้อให้อัตโนมัติ" or currentFloor == 2 and "ต้องมี Crystallite Pickaxe ขึ้นไป • ยังไม่ซื้อให้อัตโนมัติ" or "ยังไม่มี Pickaxe • Iron Pickaxe ราคา 500 Col"
             updateStatus()
             return
         end
@@ -6825,6 +6872,8 @@ function state.SetEnabled(enabled)
         miningBaseline, state.OreGained = mining.Count(state.Selected), 0
         steelBaseline, ironBaseline = mining.Count("SteelOre"), mining.Count("IronOre")
         crystalliteBaseline = mining.Count("CrystalliteOre")
+        state.ObsidianBaseline, state.VerditeBaseline = mining.Count("ObsidianOre"), mining.Count("VerditeOre")
+        state.ObsidianGained, state.VerditeGained = 0, 0
         state.SteelGained, state.IronGained, state.CrystalliteGained = 0, 0, 0
         startWebhookTracking()
     end
@@ -7256,12 +7305,14 @@ refreshChoices = function()
         end
     end
     if state.Mode == "Mining" then
-        if currentFloor == 2 then
+        if currentFloor == 3 then
+            names.Floor3Any, names.ObsidianOre, names.VerditeOre = true, true, true
+        elseif currentFloor == 2 then
             names.CrystalliteOre, names.CrystalliteArea1, names.CrystalliteArea2 = true, true, true
         else
             names.CaveSteelFirst, names.SteelOre, names.IronOre = true, true, true
         end
-        local ores = workspace:FindFirstChild("OreNodes")
+        local ores = state.OreFolder()
         if ores then
             for _, node in ores:QueryDescendants("Model.OreNode") do
                 local name = node:GetAttribute("OreType")
@@ -7278,6 +7329,7 @@ refreshChoices = function()
             end
         end
         if currentFloor == 1 then counts.CaveSteelFirst = (counts.SteelOre or 0) + (counts.IronOre or 0) end
+        if currentFloor == 3 then counts.Floor3Any = (counts.ObsidianOre or 0) + (counts.VerditeOre or 0) end
     end
     if state.Mode == "Quest" then for id in stoneQuestUiChoices do names[id] = true end end
     if state.Mode == "Craft" and crafting then
@@ -7312,7 +7364,7 @@ refreshChoices = function()
     table.sort(sorted, function(a, b)
         if state.Mode == "Quest" then return (stoneQuestUiChoices[a] and stoneQuestUiChoices[a].Rank or 99) < (stoneQuestUiChoices[b] and stoneQuestUiChoices[b].Rank or 99) end
         if state.Mode == "Mining" then
-            local ranks = {CaveSteelFirst = 0, SteelOre = 1, IronOre = 2, CrystalliteOre = 0, CrystalliteArea1 = 1, CrystalliteArea2 = 2}
+            local ranks = {Floor3Any = 0, ObsidianOre = 1, VerditeOre = 2, CaveSteelFirst = 0, SteelOre = 1, IronOre = 2, CrystalliteOre = 0, CrystalliteArea1 = 1, CrystalliteArea2 = 2}
             if (ranks[a] or 3) ~= (ranks[b] or 3) then return (ranks[a] or 3) < (ranks[b] or 3) end
             return a < b
         end
@@ -9405,7 +9457,7 @@ worldController = (function()
             return data and data.floors and data.floors.remakeHighest
         end)
         if setIdentity then setIdentity(previous) end
-        if ok and type(value)=="number" then api.Highest=math.clamp(math.floor(value),1,2) end
+        if ok and type(value)=="number" then api.Highest=math.clamp(math.floor(value),1,3) end
         return api.Highest
     end
     function state.SaveSettings()
@@ -9467,9 +9519,9 @@ worldController = (function()
         queueStatus()
     end
     function state.WarpToFloor(value)
-        local floor=tonumber(value) or (value=="Floor 1" and 1 or value=="Floor 2" and 2)
+        local floor=tonumber(value) or (value=="Floor 1" and 1 or value=="Floor 2" and 2 or value=="Floor 3" and 3)
         local reason
-        if floor~=1 and floor~=2 then reason="ยังไม่รองรับชั้นนี้"
+        if floor~=1 and floor~=2 and floor~=3 then reason="ยังไม่รองรับชั้นนี้"
         elseif floor==currentFloor then reason="อยู่ชั้นนี้แล้ว"
         elseif floor>readHighest() then reason="ต้องปลดล็อกชั้นนี้ในเกมก่อน"
         elseif state.FloorTravelling then reason="กำลังย้ายชั้น กรุณารอสักครู่"
@@ -9556,8 +9608,8 @@ worldController = (function()
         retryServer.Name,retryServer.TextSize="SelectLeastPlayersServer",10
         connect(retryServer.Activated,state.SelectLeastPlayersServer)
         local floors={}
-        for floor=1,2 do
-            local b=button("ไปชั้น "..floor,UDim2.fromOffset(136,32),UDim2.fromOffset((floor-1)*144,244),frame)
+        for floor=1,3 do
+            local b=button("ไปชั้น "..floor,UDim2.fromOffset(88,32),UDim2.fromOffset((floor-1)*96,244),frame)
             b.Name,b.TextSize="GoToFloor"..floor,12
             connect(b.Activated,function()state.WarpToFloor(floor)end)
             floors[floor]=b
@@ -10129,7 +10181,7 @@ end
 
 local function chooseTarget(root)
     if state.Mode=="SecretRoom" and state.SecretRoomController then local locked=state.SecretRoomController.LockTarget() if locked then return locked end end
-    local folder = workspace:FindFirstChild(state.Mode == "Mining" and "OreNodes" or "Mobs")
+    local folder = state.Mode == "Mining" and state.OreFolder() or workspace:FindFirstChild("Mobs")
     if not folder then return end
     local best, distance, bestPriority = nil, math.huge, math.huge
     local questGuard = state.Mode == "Quest" and forgeQuest.GuardRoot() or nil
@@ -10182,7 +10234,7 @@ local function oreApproaches(c, target, start)
         if ground and ground.Normal.Y > 0.5 then
             point = ground.Position + Vector3.new(0, 3, 0)
             local ceiling = workspace:Raycast(ground.Position + Vector3.new(0, 0.3, 0), Vector3.new(0, 5, 0), params)
-            if not ceiling and math.abs(point.Y - center.Y) <= 7 then
+            if not ceiling and math.abs(point.Y - center.Y) <= 7 and not state.IsMiningApproachBlocked(target,point) then
                 table.insert(positions, {Position = point, Partial = false})
             end
         end
@@ -10372,7 +10424,7 @@ local function planRoute(c, root, target)
     -- A long full-map ComputeAsync can outlive the no-progress watchdog after a respawn.
     -- Use the existing successful 450-stud partial-leg flow for native quest pins.
     local shortQuestLeg = nativeQuestLeg or UIS.TouchEnabled and state.Mode == "Quest"
-    if destinationDistance > (shortQuestLeg and 600 or 2200) then
+    if destinationDistance > ((shortQuestLeg or currentFloor==3 and state.Mode=="Mining") and 600 or 2200) then
         local intermediate = start + (candidates[1].Position - start).Unit * 450
         local params = RaycastParams.new()
         params.FilterType = Enum.RaycastFilterType.Exclude
@@ -10381,7 +10433,7 @@ local function planRoute(c, root, target)
         candidates = {{Position = hit and hit.Position + Vector3.new(0, 3, 0) or intermediate, Partial = true}}
     end
     task.spawn(function()
-        local path = Pathfinding:CreatePath({AgentRadius = cave and 2 or 3, AgentHeight = 5, AgentCanJump = true, WaypointSpacing = cave and 8 or 6})
+        local path = Pathfinding:CreatePath({AgentRadius = cave and 2 or 3, AgentHeight = 5, AgentCanJump = true, WaypointSpacing = cave and 8 or 6, Costs = currentFloor==3 and state.Mode=="Mining" and {Water=math.huge} or {}})
         local ok, problem
         local directRoute
         for _, candidate in candidates do
@@ -10394,7 +10446,10 @@ local function planRoute(c, root, target)
                 break
             end
             ok, problem = pcall(function() path:ComputeAsync(start, destination) end)
-            if ok and path.Status == Enum.PathStatus.Success then break end
+            if ok and path.Status == Enum.PathStatus.Success then
+                if state.MiningDryPath(path:GetWaypoints(),c,target,ticket) then break end
+                ok=false
+            end
         end
         -- Surface detours are only useful outside the cave; never choose its roof as a mining stance.
         if not directRoute and (not ok or path.Status ~= Enum.PathStatus.Success) and (not cave or (start - steelCaveEntry).Magnitude > 650) then
@@ -10413,12 +10468,15 @@ local function planRoute(c, root, target)
                     local hit = workspace:Raycast(candidate + Vector3.new(0, 100, 0), Vector3.new(0, -400, 0), params)
                     if hit then candidate = hit.Position + Vector3.new(0, 3, 0) end
                     ok, problem = pcall(function() path:ComputeAsync(start, candidate) end)
-                    if ok and path.Status == Enum.PathStatus.Success then
+                    if ok and path.Status == Enum.PathStatus.Success and state.MiningDryPath(path:GetWaypoints(),c,target,ticket) then
                         destination, partial = candidate, true
                         break
                     end
                 end
             end
+        end
+        if not directRoute and ok and path.Status == Enum.PathStatus.Success then
+            ok=state.MiningDryPath(path:GetWaypoints(),c,target,ticket)
         end
         if state.Alive and state.Enabled and ticket == generation then
             planning = false
@@ -10513,9 +10571,252 @@ local function wallDetour(c, root, desired, objective)
     return best
 end
 
+-- Changing paths or moving in circles does not count as progress by itself.
+function state.CreateMiningRouteWatch()
+    local target, route, index, best, progressAt, seenAt, strikes
+    local api = {}
+    function api.Reset()
+        target, route, index, best, progressAt, seenAt, strikes = nil, nil, nil, nil, nil, nil, 0
+    end
+    function api.Step(sample)
+        local now = sample.At
+        if sample.Target ~= target then
+            target, route, index, best, progressAt, seenAt, strikes = sample.Target, sample.Route, sample.Index, sample.Distance, now, now, 0
+            return nil
+        end
+        -- Native menus, potion use, stamina recovery and combat may pause routing.
+        if sample.Paused or now-(seenAt or now)>2 then progressAt=now end
+        seenAt = now
+        if sample.Paused then return nil end
+        if sample.Distance <= best-3 then
+            best, progressAt, strikes = sample.Distance, now, 0
+        elseif sample.Route ~= nil and sample.Route == route and sample.Index >= (index or sample.Index)+2 then
+            -- Real advancement on one stable path allows a legitimate obstacle detour.
+            progressAt, index = now, sample.Index
+        end
+        if sample.Route ~= route then route, index = sample.Route, sample.Index end
+        if now-progressAt < 10 then return nil end
+        progressAt, strikes = now, strikes+1
+        return strikes == 1 and "Replan" or "Skip"
+    end
+    api.Reset()
+    return api
+end
+state.MiningRouteWatch = state.CreateMiningRouteWatch()
+state.MiningRejectedApproaches = setmetatable({}, {__mode="k"})
+function state.MiningShouldSprint(distance, facing, sprinting)
+    return facing>0.25 and distance>(sprinting and 8 or 14)
+end
+function state.IsMiningApproachBlocked(target, position)
+    local entries = state.MiningRejectedApproaches[target]
+    if not entries then return false end
+    local now = os.clock()
+    for i=#entries,1,-1 do
+        local entry=entries[i]
+        if entry.Until<=now then table.remove(entries,i)
+        elseif (entry.Position-position).Magnitude<3 then return true end
+    end
+    return false
+end
+function state.CheckMiningRoute(root,target)
+    if state.Mode~="Mining" or state.MiningDefenseTarget or not target:GetAttribute("OreType") then return false end
+    local now=os.clock()
+    local decision=state.MiningRouteWatch.Step({Target=target,At=now,Distance=(mobRoot(target).Position-root.Position).Magnitude,
+        Route=route,Index=routeIndex,Paused=state.StaminaRecovering or actionBusy()})
+    if not decision then return false end
+    if decision=="Replan" then
+        if routeGoal and not routePartial and (routeGoal-mobRoot(target).Position).Magnitude<12 then
+            local entries=state.MiningRejectedApproaches[target] or {}
+            state.MiningRejectedApproaches[target]=entries
+            if #entries>=8 then table.remove(entries,1) end
+            table.insert(entries,{Position=routeGoal,Until=now+60})
+        end
+        state.MiningLoopReplans=(state.MiningLoopReplans or 0)+1
+        state.Status="ทางเดิมไม่คืบหน้า • เปลี่ยนทางเข้าหาแร่"
+    else
+        blocked[target]=now+60
+        state.Target=nil
+        state.MiningLoopSkips=(state.MiningLoopSkips or 0)+1
+        state.Status="จุดนี้เดินติด • ไปขุดจุดอื่นก่อน"
+        state.MiningRouteWatch.Reset()
+    end
+    stopMovement()
+    invalidateRoute()
+    lastPlan, lastPick = -100, -100
+    lastPosition, lastProgress = root.Position, now
+    return true
+end
+
+function state.CreateMiningWaterDashGate()
+    local character, lastAttempt = nil, -math.huge
+    return {Step=function(s)
+        if s.Character~=character then character,lastAttempt=s.Character,-math.huge end
+        if not s.Alive or not s.Water or not s.Moving or s.Focused or s.Busy
+            or s.Cooldown>0 or s.Stamina<s.Cost or s.At-lastAttempt<0.5 then return false end
+        lastAttempt=s.At
+        return true
+    end}
+end
+state.MiningWaterDashGate=state.CreateMiningWaterDashGate()
+function state.MiningWaterAt(point)
+    local ok,wet=pcall(function()
+        local region=Region3.new(point-Vector3.new(.25,.25,.25),point+Vector3.new(.25,.25,.25)):ExpandToGrid(4)
+        local materials,occupancy=workspace.Terrain:ReadVoxels(region,4)
+        local minimum=region.CFrame.Position-region.Size*.5
+        local x=math.floor((point.X-minimum.X)/4)+1
+        local y=math.floor((point.Y-minimum.Y)/4)+1
+        local z=math.floor((point.Z-minimum.Z)/4)+1
+        return materials[x][y][z]==Enum.Material.Water and occupancy[x][y][z]>.05
+    end)
+    return ok and wet
+end
+function state.TryMiningWaterDash(c,h,root,targetRoot)
+    if state.Mode~="Mining" or state.MiningDefenseTarget or state.MiningInnPrompt then return false end
+    local now=os.clock()
+    if now-(state.MiningWaterCheckAt or -100)<.12 then return false end
+    state.MiningWaterCheckAt=now
+    local goal=moveGoal or targetRoot and targetRoot.Position
+    local delta=goal and goal-root.Position or Vector3.zero
+    local flat=Vector3.new(delta.X,0,delta.Z)
+    if flat.Magnitude<3 then return false end
+    local direction=flat.Unit
+    local feet=root.Position-Vector3.new(0,math.max(h.HipHeight,2)+root.Size.Y*.5+1,0)
+    local water=h.FloorMaterial==Enum.Material.Water or h:GetState()==Enum.HumanoidStateType.Swimming
+        or state.MiningWaterAt(feet) or state.MiningWaterAt(feet+direction*4)
+    state.MiningInWater=water
+    if not water then return false end
+    if not state.MiningWaterNative then
+        state.MiningWaterNative=require(player.PlayerScripts.Client.Systems.Combat)
+        state.MiningWaterConfig=require(game:GetService("ReplicatedStorage").Shared.Config.CombatConfig).dash
+    end
+    local native,config=state.MiningWaterNative,state.MiningWaterConfig
+    if type(native.dash)~="function" or type(native.dashCooldownLeft)~="function" then return false end
+    if not state.MiningWaterDashGate.Step({Character=c,At=now,Alive=state.Alive and state.Enabled and h.Health>0,
+        Water=water,Moving=true,Focused=combat.IsFocused(),Busy=actionBusy() or autoSkills.Busy() or state.StaminaRecovering
+            or potionController and potionController.Pending or c:GetAttribute("Stunned") or c:GetAttribute("GuardBroken") or c:GetAttribute("Paralyzed"),
+        Cooldown=native.dashCooldownLeft(),Stamina=c:GetAttribute("Stamina") or 0,Cost=config.staminaCost or 10}) then return false end
+    runAction("mining water dash",function()
+        if not state.Alive or not state.Enabled or state.Mode~="Mining" or player.Character~=c or h.Health<=0
+            or combat.IsFocused() or native.dashCooldownLeft()>0 then return end
+        h:Move(direction,false)
+        root.CFrame=CFrame.lookAt(root.Position,root.Position+direction)
+        native.dash()
+        if native.dashCooldownLeft()>0 then
+            state.MiningWaterDashes=(state.MiningWaterDashes or 0)+1
+            state.MiningWaterDashUntil=os.clock()+math.clamp(config.duration or .3,.1,1)
+        end
+    end)
+    state.Status="ลงน้ำ • แดชไปตามทาง"
+    return true
+end
+
+-- Check the actual ground on a proposed mining route, including between waypoints.
+function state.MiningDryPath(points,c,target,ticket)
+    if currentFloor~=3 or state.Mode~="Mining" or state.MiningDefenseTarget then return true end
+    local params=RaycastParams.new()
+    params.FilterType,params.RespectCanCollide,params.IgnoreWater=Enum.RaycastFilterType.Exclude,true,false
+    params.FilterDescendantsInstances={c,target,workspace:FindFirstChild("Mobs")}
+    local count,sawDry=0,false
+    local previous=points[1] and points[1].Position
+    if not previous then return false end
+    for _,wp in points do
+        local delta=wp.Position-previous
+        local samples=math.max(1,math.ceil(delta.Magnitude/5))
+        for i=1,samples do
+            count+=1
+            if count>512 or not state.Alive or not state.Enabled or generation~=ticket then return false end
+            local point=previous+delta*(i/samples)
+            local hit=workspace:Raycast(point+Vector3.new(0,2,0),Vector3.new(0,-5,0),params)
+            local wet=hit and hit.Material==Enum.Material.Water
+                or (not hit or hit.Instance==workspace.Terrain) and state.MiningWaterAt(point+Vector3.new(0,1,0))
+            if wet then
+                -- If already standing in an edge water voxel, allow only the
+                -- first few studs of an escape to dry ground, never re-entry.
+                if sawDry or (point-points[1].Position).Magnitude>8 then
+                    state.MiningWetPathsRejected=(state.MiningWetPathsRejected or 0)+1
+                    return false
+                end
+            else
+                sawDry=true
+            end
+            if count%32==0 then task.wait() end
+        end
+        previous=wp.Position
+    end
+    if not sawDry then state.MiningWetPathsRejected=(state.MiningWetPathsRejected or 0)+1 end
+    return sawDry
+end
+
+function state.CreateMiningWaterReturnWatch(distance)
+    local character,lastDry,lastPosition,wetAt,maxAway
+    return {Step=function(s)
+        if character~=s.Character then character,lastDry,lastPosition,wetAt,maxAway=s.Character,nil,nil,nil,0 end
+        local pulled=false
+        if s.Wet then
+            wetAt=s.At
+            if lastDry then maxAway=math.max(maxAway,distance(s.Position,lastDry)) end
+        elseif wetAt and s.At-wetAt<=3 and lastDry and lastPosition then
+            pulled=maxAway>=6 and distance(s.Position,lastDry)<=8 and distance(s.Position,lastPosition)>=6
+        end
+        if pulled then wetAt,maxAway=nil,0 end
+        if not s.Wet and (not wetAt or s.At-wetAt>3) then lastDry=s.Position maxAway=0 end
+        lastPosition=s.Position
+        return pulled,lastDry
+    end}
+end
+state.MiningWaterReturnWatch=state.CreateMiningWaterReturnWatch(function(a,b)return (a-b).Magnitude end)
+state.MiningPreviousWaterDash=state.TryMiningWaterDash
+function state.TryMiningWaterDash(c,h,root,targetRoot)
+    if currentFloor~=3 then return state.MiningPreviousWaterDash(c,h,root,targetRoot) end
+    if state.Mode~="Mining" or state.MiningDefenseTarget or state.MiningInnPrompt then return false end
+    local now=os.clock()
+    if now-(state.MiningDryCheckAt or -100)<.12 then return false end
+    state.MiningDryCheckAt=now
+    local feet=root.Position-Vector3.new(0,math.max(h.HipHeight,2)+root.Size.Y*.5+1,0)
+    -- Solid footing above water (e.g. bridges) is dry; airborne feet in water are not.
+    local wet=h.FloorMaterial==Enum.Material.Water or h:GetState()==Enum.HumanoidStateType.Swimming
+        or h.FloorMaterial==Enum.Material.Air and state.MiningWaterAt(feet)
+    local pulled,dry=state.MiningWaterReturnWatch.Step({Character=c,At=now,Position=root.Position,Wet=wet})
+    local goal=moveGoal or targetRoot and targetRoot.Position
+    local delta=goal and goal-root.Position or Vector3.zero
+    local flat=Vector3.new(delta.X,0,delta.Z)
+    local aheadWet=false
+    if flat.Magnitude>3 then
+        local point=feet+flat.Unit*math.min(7,flat.Magnitude)
+        local params=RaycastParams.new()
+        params.FilterType,params.RespectCanCollide,params.IgnoreWater=Enum.RaycastFilterType.Exclude,true,false
+        params.FilterDescendantsInstances={c,workspace:FindFirstChild("Mobs")}
+        local hit=workspace:Raycast(point+Vector3.new(0,4,0),Vector3.new(0,-7,0),params)
+        aheadWet=hit and hit.Material==Enum.Material.Water
+            or (not hit or hit.Instance==workspace.Terrain) and state.MiningWaterAt(point+Vector3.new(0,1,0))
+    end
+    state.MiningInWater=wet
+    if wet then
+        -- Only use a normal dash to retreat toward the last observed dry ground.
+        if dry and (dry-root.Position).Magnitude>3 then
+            moveGoal=dry
+            if state.MiningPreviousWaterDash(c,h,root,{Position=dry}) then return true end
+        end
+        stopMovement()
+        return true
+    end
+    if not pulled and not aheadWet then return false end
+    if not pulled and now<(state.MiningDryRetryAt or 0) then return false end
+    state.MiningDryRetryAt=now+2
+    if pulled then state.MiningWaterPullbacks=(state.MiningWaterPullbacks or 0)+1 end
+    state.MiningWaterReroutes=(state.MiningWaterReroutes or 0)+1
+    stopMovement()
+    invalidateRoute()
+    lastPlan=-100
+    state.Status=pulled and "ถูกน้ำดึงกลับ • เปลี่ยนไปทางบนบก" or "ทางข้างหน้าเป็นน้ำ • หาทางอ้อมบนบก"
+    return true
+end
+
 local function navigate(c, h, root, target, distance, targetRoot)
     if not energyReady(c, h, root) then return end
     state.StepStage = "navigation"
+    if state.TryMiningWaterDash(c,h,root,targetRoot) then return end
+    if state.CheckMiningRoute(root,target) then return end
     if not lastPosition or (root.Position - lastPosition).Magnitude >= 2 then
         lastPosition, lastProgress = root.Position, os.clock()
     elseif os.clock() - lastProgress > 5 then
@@ -10523,7 +10824,7 @@ local function navigate(c, h, root, target, distance, targetRoot)
         invalidateRoute()
         lastProgress = os.clock()
     end
-    if state.Mode ~= "Mining" and target and target.Parent == workspace:FindFirstChild("Mobs") and distance <= 80 and os.clock()-lastProgress<2 then
+    if (state.Mode ~= "Mining" or state.MiningDefenseTarget == target) and target and target.Parent == workspace:FindFirstChild("Mobs") and distance <= 80 and os.clock()-lastProgress<2 then
         local approach = questCombatApproach(c,root,target,targetRoot)
         local delta = (approach or targetRoot.Position)-root.Position
         local flat = Vector3.new(delta.X,0,delta.Z)
@@ -10616,10 +10917,17 @@ local function navigate(c, h, root, target, distance, targetRoot)
     elseif distance < 16 then
         moveGoal = targetRoot.Position
     end
-    pcall(function() setSprint(moveGoal ~= nil) end)
+    local sprint = moveGoal ~= nil
+    if currentFloor==3 and state.Mode=="Mining" and not state.MiningDefenseTarget then
+        local delta=moveGoal and moveGoal-root.Position or Vector3.zero
+        local flat=Vector3.new(delta.X,0,delta.Z)
+        sprint=flat.Magnitude>0.01 and state.MiningShouldSprint(distance,flat.Unit:Dot(root.CFrame.LookVector),c:GetAttribute("Sprinting")==true)
+    end
+    pcall(function() setSprint(sprint) end)
 end
 
 local function maybeWarpToOreTown(c, h, root, townTarget)
+    if currentFloor == 3 then return false end
     if not state.AutoTownWarp or os.clock() < warpRetryAt then return false end
     if not warpPlan then
         local anchors = workspace:FindFirstChild("MapAnchors")
@@ -10865,6 +11173,303 @@ local function stepForgeQuest(c,h,root)
     return false
 end
 
+-- Small policy state machine; injected predicates allow tests without gameplay.
+function state.CreateMiningGuard(options)
+    local character, health, target, ore, origin
+    local resume = false
+    local api = {}
+    function api.Death(candidate)
+        if options.ValidOre(candidate) then ore = candidate end
+        character, health, target, origin = nil, nil, nil, nil
+        resume = true
+    end
+    function api.Stop()
+        character, health, target, ore, origin = nil, nil, nil, nil, nil
+        resume = false
+    end
+    function api.Step(snapshot)
+        if options.ValidOre(snapshot.Ore) then ore = snapshot.Ore end
+        if snapshot.Character ~= character then
+            character, health, target, origin = snapshot.Character, snapshot.Health, nil, nil
+        end
+        local damaged = type(health) == "number" and snapshot.Health < health
+        health = snapshot.Health
+        if health <= 0 then api.Death(ore) return {Waiting = true} end
+        if target and not options.ValidThreat(target, snapshot.Position, origin) then
+            target, origin, resume = nil, nil, true
+        end
+        if damaged and not target then
+            local candidate = options.FindThreat(snapshot.Position)
+            if candidate and options.ValidThreat(candidate, snapshot.Position, snapshot.Position) then
+                target, origin = candidate, snapshot.Position
+            end
+        end
+        if target then return {Target = target} end
+        local returning = resume
+        resume = false
+        return {Resume = returning, Ore = options.ValidOre(ore) and ore or nil}
+    end
+    return api
+end
+
+function state.IsMiningThreat(m)
+    local folder = workspace:FindFirstChild("Mobs")
+    return folder ~= nil and m ~= nil and m.Parent == folder and m:IsA("Model") and m:GetAttribute("MobKind") ~= nil
+        and not m:GetAttribute("StoryOwner") and m:GetAttribute("IsDead") ~= true
+        and type(m:GetAttribute("Health")) == "number" and m:GetAttribute("Health") > 0
+        and mobRoot(m) ~= nil
+end
+function state.MiningThreatPoint(m, position)
+    local root = mobRoot(m)
+    if root and typeof(root) == "Instance" and root:IsA("BasePart")
+        and math.max(root.Size.X, root.Size.Z) >= 6 then
+        return root:GetClosestPointOnSurface(position)
+    end
+    return root and root.Position
+end
+state.MiningGuard = state.CreateMiningGuard({
+    ValidOre = function(m) return m ~= nil and isSelectedOre(m) and (blocked[m] or 0)<os.clock() and m:GetAttribute("MinedOut") ~= true and m:FindFirstChild("Ore") ~= nil end,
+    ValidThreat = function(m, position, origin)
+        if not state.IsMiningThreat(m) then return false end
+        local point = state.MiningThreatPoint(m, position)
+        return point ~= nil and (point-position).Magnitude <= 45
+    end,
+    FindThreat = function(position)
+        local folder = workspace:FindFirstChild("Mobs")
+        local nearest, distance = nil, 22
+        for _, m in folder and folder:GetChildren() or {} do
+            if state.IsMiningThreat(m) then
+                local delta = state.MiningThreatPoint(m,position)-position
+                if math.abs(delta.Y) <= 10 and delta.Magnitude < distance then
+                    nearest, distance = m, delta.Magnitude
+                end
+            end
+        end
+        return nearest
+    end,
+})
+
+function state.ResetMiningGuard(death)
+    if state.MiningRouteWatch then state.MiningRouteWatch.Reset() end
+    if state.MiningInnRelease then pcall(state.MiningInnRelease) end
+    state.MiningInnPrompt, state.MiningInnRequested = nil, nil
+    if death and state.Enabled and state.Mode == "Mining" then
+        if state.MiningFleeTarget or state.MiningDefenseTarget then state.MiningGuard.Death(nil) else state.MiningGuard.Death(state.Target) end
+        state.MiningReturnPending = true
+    else
+        state.MiningGuard.Stop()
+        state.MiningReturnPending = false
+    end
+    state.MiningDefenseTarget = nil
+    state.MiningFleeTarget = nil
+    if state.MiningFleePoint then state.MiningFleePoint:Destroy() end
+    state.MiningFleePoint,state.MiningFleeGoalAt,state.MiningFleeDirect=nil,nil,nil
+end
+
+-- Inns use real Leave prompts: bedroom -> inn hall -> outside world.
+function state.StepMiningInn(c,h,root)
+    local now = os.clock()
+    if state.MiningInnRequested then
+        local request = state.MiningInnRequested
+        if (root.Position-request.Position).Magnitude >= 15 then
+            state.MiningInnExits = (state.MiningInnExits or 0)+1
+            state.MiningInnRequested, state.MiningInnPrompt = nil, nil
+            state.MiningInnScanAt = -100
+            table.clear(blocked)
+            invalidateRoute()
+            lastPosition, lastProgress, lastPick = root.Position, now, -100
+        elseif now-request.At < 3 then
+            stopMovement()
+            state.Status = "กำลังออกจากที่พัก • รอประตูเกม"
+            return true
+        else
+            state.MiningInnRequested = nil
+        end
+    end
+    if now-(state.MiningInnScanAt or -100) >= 1 then
+        state.MiningInnScanAt = now
+        local nearest, distance = nil, 100
+        for _,prompt in workspace:QueryDescendants('ProximityPrompt[$Kind = "InnDoor"]') do
+            local part = prompt.Parent
+            if prompt.Enabled and prompt.ActionText == "Leave" and part:IsA("BasePart") then
+                local d = (part.Position-root.Position).Magnitude
+                if d < distance then nearest, distance = prompt, d end
+            end
+        end
+        state.MiningInnPrompt = nearest
+    end
+    local prompt = state.MiningInnPrompt
+    if not prompt or not prompt.Parent or not prompt.Enabled then return false end
+    local part = prompt.Parent
+    local distance = (part.Position-root.Position).Magnitude
+    if distance > 105 then state.MiningInnPrompt = nil return false end
+    state.Status = "ออกจากที่พัก → กลับไปขุดแร่"
+    state.Distance = distance
+    if distance > math.max(2,prompt.MaxActivationDistance-2) then
+        -- The detached inn interior has no usable navigation mesh. Use ordinary
+        -- short-room Humanoid steering, and jump off the bed if it obstructs us.
+        if route or planning then invalidateRoute() end
+        local delta = part.Position-root.Position
+        if math.abs(delta.Y) <= 30 then
+            local detour = state.MiningInnDetour
+            if detour and (Vector3.new(detour.X-root.Position.X,0,detour.Z-root.Position.Z).Magnitude <= 2
+                or now >= (state.MiningInnDetourUntil or 0)) then detour = nil end
+            if not detour then
+                detour = wallDetour(c,root,delta,part.Position)
+                state.MiningInnDetour, state.MiningInnDetourUntil = detour, now+4
+            end
+            moveGoal = detour or part.Position
+            if not state.MiningInnLastPosition or (root.Position-state.MiningInnLastPosition).Magnitude >= 1 then
+                state.MiningInnLastPosition, state.MiningInnProgressAt = root.Position, now
+            elseif now-(state.MiningInnProgressAt or now) >= 2 then
+                requestJump(h)
+                state.MiningInnProgressAt = now
+            end
+            pcall(function()setSprint(false)end)
+        else
+            navigate(c,h,root,part,distance,part)
+        end
+        return true
+    end
+    stopMovement()
+    pcall(function()setSprint(false)end)
+    if actionBusy() or now < (state.MiningInnRetryAt or 0) then return true end
+    state.MiningInnRetryAt = now+3
+    state.MiningInnRequested = {At=now,Position=root.Position}
+    runAction("leave mining inn",function()
+        if not state.Alive or not state.Enabled or state.Mode~="Mining" or player.Character~=c
+            or not prompt.Parent or not prompt.Enabled or (part.Position-root.Position).Magnitude>prompt.MaxActivationDistance then return end
+        local previous = getthreadidentity and getthreadidentity() or 2
+        if setthreadidentity then setthreadidentity(8) end
+        -- Activate this exact in-range native door, independent of camera selection.
+        -- Never change Enabled/activation distance or invoke an entrance/sleep prompt.
+        if type(fireproximityprompt) == "function" then
+            local ok,problem = pcall(fireproximityprompt,prompt)
+            if setthreadidentity then setthreadidentity(previous) end
+            state.MiningInnLastActivation = {Method="ExactPrompt",Ok=ok,At=os.clock()}
+            if not ok then error(problem) end
+            return
+        end
+        local input = game:GetService("VirtualInputManager")
+        local released = false
+        local function release()
+            if released then return end
+            released = true
+            local identity = getthreadidentity and getthreadidentity() or 8
+            if setthreadidentity then setthreadidentity(8) end
+            pcall(function()input:SendKeyEvent(false,prompt.KeyboardKeyCode,false,game)end)
+            if setthreadidentity then setthreadidentity(identity) end
+            state.MiningInnRelease = nil
+        end
+        state.MiningInnRelease = release
+        local ok,problem=pcall(function()
+            input:SendKeyEvent(true,prompt.KeyboardKeyCode,false,game)
+            task.wait(math.clamp(prompt.HoldDuration,0,2)+0.12)
+        end)
+        release()
+        if setthreadidentity then setthreadidentity(previous) end
+        if not ok then error(problem) end
+    end)
+    return true
+end
+function state.ChooseMiningFleeGoal(c,h,root,threat)
+    local enemy=mobRoot(threat)
+    if not enemy then return nil end
+    local away=root.Position-enemy.Position
+    away=Vector3.new(away.X,0,away.Z)
+    if away.Magnitude<.1 then away=-root.CFrame.LookVector end
+    away=Vector3.new(away.X,0,away.Z).Unit
+    local params=RaycastParams.new()
+    params.FilterType,params.RespectCanCollide,params.IgnoreWater=Enum.RaycastFilterType.Exclude,true,false
+    params.FilterDescendantsInstances={c,workspace:FindFirstChild("Mobs")}
+    local height=h.HipHeight+root.Size.Y*.5
+    local expected=root.Position.Y-height
+    local best,bestScore,bestDirect
+    for _,angle in {0,45,-45,90,-90} do
+        local a=math.rad(angle)
+        local direction=Vector3.new(away.X*math.cos(a)-away.Z*math.sin(a),0,away.X*math.sin(a)+away.Z*math.cos(a))
+        local p=root.Position+direction*32
+        local hit=workspace:Raycast(Vector3.new(p.X,expected+10,p.Z),Vector3.new(0,-20,0),params)
+        if hit and hit.Normal.Y>=.65 and hit.Material~=Enum.Material.Water and math.abs(hit.Position.Y-expected)<=6
+            and (hit.Instance~=workspace.Terrain or not state.MiningWaterAt(hit.Position+Vector3.new(0,1,0))) then
+            local goal=hit.Position+Vector3.new(0,height,0)
+            local direct=clearWalkSegment(c,threat,root.Position,goal,40)
+            local score=(goal-enemy.Position).Magnitude+direction:Dot(away)*20+(direct and 100 or 0)
+            if not bestScore or score>bestScore then best,bestScore,bestDirect=goal,score,direct end
+        end
+    end
+    return best,bestDirect
+end
+
+function state.UpdateMiningGuard(c,h,root)
+    local decision = state.MiningGuard.Step({Character=c, Health=h.Health, Position=root.Position,
+        Ore=not state.MiningFleeTarget and state.Target or nil})
+    if decision.Waiting then return true end
+    local previous = state.MiningFleeTarget
+    state.MiningDefenseTarget = nil
+    state.MiningFleeTarget = decision.Target
+    if previous ~= decision.Target then
+        cancelAction()
+        autoSkills.Cancel()
+        pcall(mining.Cancel)
+        pcall(combat.Release)
+        stopMovement()
+        invalidateRoute()
+        state.CombatRangeTarget, state.StaminaRecovering = nil, false
+        if decision.Target then
+            local ores=state.OreFolder()
+            for _,node in ores and ores:QueryDescendants("Model.OreNode") or {} do
+                local center=mobRoot(node)
+                if center and (center.Position-root.Position).Magnitude<90 then blocked[node]=os.clock()+90 end
+            end
+            state.MiningFlees=(state.MiningFlees or 0)+1
+        end
+        state.Target = not decision.Target and decision.Ore or nil
+        state.MiningFleeGoalAt=nil
+        lastAttack, lastEquip, lastPick = -100, -100, -100
+        lastPosition, lastProgress = root.Position, os.clock()
+    elseif decision.Resume then
+        state.Target = decision.Ore
+        invalidateRoute()
+        lastPick, lastEquip = -100, -100
+        lastPosition, lastProgress = root.Position, os.clock()
+    end
+    if decision.Resume then
+        state.MiningReturns = (state.MiningReturns or 0)+1
+        state.MiningReturnPending = false
+    end
+    if not decision.Target then return false end
+    state.Target=nil
+    if not energyReady(c,h,root) then return true end
+    local now=os.clock()
+    local point=state.MiningFleePoint
+    if not point or not state.MiningFleeGoalAt or now-state.MiningFleeGoalAt>=3
+        or (point.Position-root.Position).Magnitude<5 then
+        local goal,direct=state.ChooseMiningFleeGoal(c,h,root,decision.Target)
+        if goal then
+            if not point then
+                point=Instance.new("Part") point.Name="EvernightMiningFleeGoal"
+                point.Anchored,point.CanCollide,point.CanTouch,point.CanQuery=true,false,false,false
+                state.MiningFleePoint=point
+            end
+            point.Position=goal
+            state.MiningFleeDirect,state.MiningFleeGoalAt=direct,now
+            invalidateRoute()
+        end
+    end
+    if point then
+        if state.MiningFleeDirect then moveGoal=point.Position
+        else navigate(c,h,root,point,(point.Position-root.Position).Magnitude,point) end
+        if not state.StaminaRecovering then pcall(function()setSprint(true)end) end
+    else
+        stopMovement()
+        requestJump(h)
+    end
+    state.Status="ถูกมอนโจมตี • วิ่งหนีก่อนกลับไปขุด"
+    -- This always consumes the step: mining cannot fall through into combat/skills.
+    return true
+end
+
 local function stepMining(c, h, root)
     local item, tier = mining.Pickaxe()
     if not item or tier < mining.RequiredTier(state.Selected) then
@@ -10876,6 +11481,8 @@ local function stepMining(c, h, root)
     state.SteelGained = math.max(0, mining.Count("SteelOre") - (steelBaseline or mining.Count("SteelOre")))
     state.IronGained = math.max(0, mining.Count("IronOre") - (ironBaseline or mining.Count("IronOre")))
     state.CrystalliteGained = math.max(0, mining.Count("CrystalliteOre") - (crystalliteBaseline or mining.Count("CrystalliteOre")))
+    state.ObsidianGained = math.max(0, mining.Count("ObsidianOre") - (state.ObsidianBaseline or mining.Count("ObsidianOre")))
+    state.VerditeGained = math.max(0, mining.Count("VerditeOre") - (state.VerditeBaseline or mining.Count("VerditeOre")))
     if not energyReady(c, h, root) then return end
     if maybeWarpToOreTown(c, h, root) then return end
     if not mining.Equipped() then
@@ -10933,7 +11540,7 @@ local function stepMining(c, h, root)
     if not target then
         stopMovement()
         pcall(function() setSprint(false) end)
-        state.Status, state.Distance = currentFloor == 2 and "รอ Crystallite ในเขตที่เลือกเกิดใหม่" or "รอแร่ในถ้ำเกิดใหม่", 0
+        state.Status, state.Distance = currentFloor == 3 and "รอแร่ชั้น 3 ที่เลือกเกิดใหม่ / โหลดพื้นที่ขุด" or currentFloor == 2 and "รอ Crystallite ในเขตที่เลือกเกิดใหม่" or "รอแร่ในถ้ำเกิดใหม่", 0
         return
     end
     local targetRoot = mobRoot(target)
@@ -11044,6 +11651,8 @@ local function step()
         return
     end
     remember(c, h)
+    if state.Mode == "Mining" and state.UpdateMiningGuard(c,h,root) then return end
+    if state.Mode == "Mining" and not state.MiningDefenseTarget and not combat.IsFocused() and state.StepMiningInn(c,h,root) then return end
     if state.Mode == "SecretRoom" and state.SecretRoomController.Step() then return end
     if autoSkills.Busy() then
         state.Status = "กำลังใช้สกิล " .. (state.LastSkill or "")
@@ -11065,7 +11674,7 @@ local function step()
     if controls and controls.controlsEnabled ~= false then
         pcall(function() controls:Disable() controlsChanged = true end)
     end
-    if state.Mode == "Mining" then
+    if state.Mode == "Mining" and not state.MiningDefenseTarget then
         stepMining(c, h, root)
         return
     end
@@ -11188,6 +11797,7 @@ travelController = createServiceTravelController(serviceTravel, {
 respawnController = createFreeRespawnController(freeRespawn, {
     Enabled = state.AutoRespawn, Deaths = state.RespawnDeaths, Requests = state.RespawnRequests, Completed = state.Respawns,
     OnDeath = function()
+        state.ResetMiningGuard(true)
         if state.SecretRoomController and state.SecretRoomController.Active then state.SecretRoomController.CharacterLost() end
         if state.Travelling then state.CancelServiceTravel("ตายระหว่างเดิน • ยกเลิกรายการที่รอแล้ว") end
         cancelAction()
@@ -11267,6 +11877,10 @@ state.WebhookThread = task.spawn(function()
     end
 end)
 connect(player.CharacterAdded, function()
+    state.ResetMiningGuard(true)
+    state.StaminaRecovering = false
+    warpPlan, mineAimTarget, mineAimSince = nil, nil, nil
+    mineRepositionGoal, mineRepositionTarget, mineRepositionUntil = nil, nil, nil
     if state.SecretRoomController and state.SecretRoomController.Active then state.SecretRoomController.CharacterLost() end
     motionController.Release()
     if state.Travelling then state.CancelServiceTravel("เกิดตัวละครใหม่ • ยกเลิกรายการที่รอแล้ว") end
