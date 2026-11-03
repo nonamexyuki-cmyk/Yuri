@@ -1,4 +1,4 @@
--- Evernight v2.30: self-contained installer and runner.
+-- Evernight v2.41: self-contained installer and runner.
 local source=[====[
 -- Persistent preferences and teleport continuation, confined to Project Eternity.
 local continuity = (function()
@@ -25,8 +25,8 @@ local function createPersistentSettings(options)
     local lastWebhookKey = nil
     local schemaVersion = 1
     local booleanKeys = {"PersistenceEnabled", "AutoJoinWorld", "AutoResumeFarm", "Enabled", "AutoTownWarp",
-        "AutoRespawn", "AntiAfk", "SkillsEnabled", "AutoPotion", "MenuVisible", "WebhookEnabled", "LowGraphics"}
-    local modes = {Combat = true, Mining = true, Craft = true, Sell = true, Quest = true}
+        "AutoRespawn", "AntiAfk", "SkillsEnabled", "AutoPotion", "MenuVisible", "WebhookEnabled", "LowGraphics", "SecretRoomHover", "SecretRoomLoopEnabled", "UseCurrentServer"}
+    local modes = {Combat = true, Mining = true, Craft = true, Sell = true, Quest = true, SecretRoom = true}
     local oreKinds = {CaveSteelFirst = true, SteelOre = true, IronOre = true, CrystalliteOre = true,
         CrystalliteArea1 = true, CrystalliteArea2 = true}
     local stoneQuests = {All = true, m_forge = true, m_gallows = true, nepenthesHuntQuest = true,
@@ -75,9 +75,10 @@ local function createPersistentSettings(options)
         end
         return result
     end
-    local function resumableMode(mode, selectedQuest)
+    local function resumableMode(mode, selectedQuest, secretRoomLoop)
         return mode == "Combat" or mode == "Mining"
             or mode == "Quest" and type(selectedQuest) == "string" and stoneQuests[selectedQuest] == true
+            or mode == "SecretRoom" and secretRoomLoop == true
     end
     local function sanitize(value)
         if type(value) ~= "table" then return nil end
@@ -97,6 +98,7 @@ local function createPersistentSettings(options)
         if finite(value.PotionThreshold) then result.PotionThreshold = math.clamp(math.floor(value.PotionThreshold), 1, 99) end
         if finite(value.CraftQuantity) then result.CraftQuantity = math.clamp(math.floor(value.CraftQuantity), 1, 99) end
         if finite(value.UiScale) then result.UiScale = math.clamp(value.UiScale, 0.65, 1.1) end
+        if finite(value.SecretRoomHoverHeight) then result.SecretRoomHoverHeight = math.clamp(math.floor(value.SecretRoomHoverHeight), 4, 10) end
         if value.LastFloor==1 or value.LastFloor==2 then result.LastFloor=value.LastFloor end
         result.SkillSelection = booleanMap(value.SkillSelection, 256, 160)
         result.SellLocks = booleanMap(value.SellLocks, 1000, 100)
@@ -108,7 +110,7 @@ local function createPersistentSettings(options)
             end
         end
         -- Resume supported farming only; transaction and unknown quest states stay stopped.
-        if not resumableMode(result.Mode, result.SelectedStoneQuest) then result.Enabled = false end
+        if not resumableMode(result.Mode, result.SelectedStoneQuest, result.SecretRoomLoopEnabled) then result.Enabled = false end
         return result
     end
     local function validWebhook(value)
@@ -204,7 +206,7 @@ local function createPersistentSettings(options)
         local snapshot = {}
         for _, key in ipairs(booleanKeys) do snapshot[key] = state[key] end
         for _, key in ipairs({"Mode", "SelectedMob", "SelectedOre", "SelectedWeapon", "CraftMaterial",
-            "CraftQuantity", "PotionThreshold", "UiScale", "UiSearch", "SkillSelection", "SellLocks", "LastFloor", "SelectedStoneQuest", "Floor1QuestOrder"}) do snapshot[key] = state[key] end
+            "CraftQuantity", "PotionThreshold", "UiScale", "UiSearch", "SkillSelection", "SellLocks", "LastFloor", "SelectedStoneQuest", "Floor1QuestOrder", "SecretRoomHoverHeight"}) do snapshot[key] = state[key] end
         -- A cross-floor pause must not overwrite the actual desired farm switch.
         if type(state.FloorTravelResumeEnabled) == "boolean" then snapshot.Enabled = state.FloorTravelResumeEnabled end
         return sanitize(snapshot)
@@ -241,7 +243,7 @@ local function createPersistentSettings(options)
     end
     function api.CanResume(settings, mode)
         return type(settings) == "table" and settings.PersistenceEnabled ~= false and settings.AutoResumeFarm ~= false
-            and settings.Enabled == true and resumableMode(mode, settings.SelectedStoneQuest)
+            and settings.Enabled == true and resumableMode(mode, settings.SelectedStoneQuest, settings.SecretRoomLoopEnabled)
     end
     function api.LoadWebhook()
         local profile, reason = privateStore.Load()
@@ -292,6 +294,129 @@ local function createPersistentSettings(options)
 end
 
 
+local function createLeastPlayersServer(options)
+    options=options or {}
+    local api={}
+    local maxPages=3
+    local diagnostics={Requests=0,Skipped=0,Pages=0,LastReason="NotChecked"}
+
+    local function integer(value,minimum,maximum)
+        return type(value)=="number" and value==value and value~=math.huge and value~=-math.huge
+            and value%1==0 and value>=minimum and value<=maximum
+    end
+    local function identifier(value)
+        return type(value)=="string" and #value>0 and #value<=128
+            and value:match("%S")~=nil and value:find("%c")==nil
+    end
+    local function read(value)
+        if type(value)~="function" then return value end
+        local ok,result=pcall(value)
+        return ok and result or nil
+    end
+    local function now()
+        local value=read(options.Now)
+        if type(value)=="number" and value==value and value~=math.huge and value~=-math.huge then
+            return value
+        end
+        return os.clock()
+    end
+    local function fail(reason)
+        diagnostics.LastReason=reason
+        return nil,reason
+    end
+    local function requestReason(value)
+        if type(value)=="table" then
+            local status=value.StatusCode or value.statusCode or value.status or value.code
+            if tonumber(status)==429 then return "RateLimited" end
+        elseif tostring(value):match("%f[%d]429%f[%D]") then
+            return "RateLimited"
+        end
+        return "RequestFailed"
+    end
+    local function excluded(ids,id)
+        if type(ids)~="table" then return false end
+        if ids[id] then return true end
+        for index,value in ipairs(ids) do
+            if index>100 then break end
+            if value==id then return true end
+        end
+        return false
+    end
+
+    function api.Select(placeId,settings)
+        diagnostics={Requests=0,Skipped=0,Pages=0,LastReason="Checking",CheckedAt=now()}
+        if not integer(placeId,1,9007199254740991) then return fail("InvalidPlace") end
+        if type(options.GetPage)~="function" then return fail("Unavailable") end
+        settings=type(settings)=="table" and settings or {}
+        local currentJob=read(options.CurrentJob)
+        local currentPlace=read(options.CurrentPlace)
+        local currentPlayers=read(options.CurrentPlayers)
+        local cursor,seenCursors=nil,{}
+        for pageIndex=1,maxPages do
+            diagnostics.Requests+=1
+            local ok,page,requestError=pcall(options.GetPage,placeId,cursor)
+            if not ok then return fail(requestReason(page)) end
+            if type(page)~="table" then return fail(requestReason(requestError)) end
+            local status=page.StatusCode or page.statusCode or page.status
+            if tonumber(status)==429 then return fail("RateLimited") end
+            if status and tonumber(status) and tonumber(status)>=400 then return fail("RequestFailed") end
+            if type(page.data)~="table" then return fail("InvalidPage") end
+            diagnostics.Pages=pageIndex
+            local best
+            for index,row in ipairs(page.data) do
+                if index>100 then return fail("InvalidPage") end
+                local valid=type(row)=="table" and identifier(row.id)
+                    and integer(row.maxPlayers,1,1000000)
+                    and integer(row.playing,0,row.maxPlayers)
+                    and row.playing<row.maxPlayers
+                    and not row.isPrivate and not row.privateServerId and not row.reservedServerAccessCode
+                    and not excluded(settings.ExcludeIds,row.id)
+                if valid then
+                    local isCurrent=identifier(currentJob) and row.id==currentJob and currentPlace==placeId
+                    local playing=row.playing
+                    if isCurrent and integer(currentPlayers,0,row.maxPlayers) then playing=currentPlayers end
+                    if playing<row.maxPlayers then
+                        local candidate={Id=row.id,PlaceId=placeId,Playing=playing,MaxPlayers=row.maxPlayers,
+                            Current=isCurrent==true,CheckedAt=diagnostics.CheckedAt}
+                        if not best or candidate.Playing<best.Playing
+                            or (candidate.Playing==best.Playing and candidate.Current and not best.Current)
+                            or (candidate.Playing==best.Playing and candidate.Current==best.Current
+                                and candidate.Id<best.Id) then
+                            best=candidate
+                        end
+                    else
+                        diagnostics.Skipped+=1
+                    end
+                else
+                    diagnostics.Skipped+=1
+                end
+            end
+            if best then
+                diagnostics.LastReason=best.Current and "CurrentIsLeast" or "Selected"
+                diagnostics.SelectedId=best.Id
+                diagnostics.SelectedPlaying=best.Playing
+                return best,diagnostics.LastReason
+            end
+            local nextCursor=page.nextPageCursor
+            if nextCursor==nil or nextCursor=="" then return fail("NoAvailableServer") end
+            if type(nextCursor)~="string" or #nextCursor>2048 or nextCursor:find("%c") then
+                return fail("InvalidCursor")
+            end
+            if seenCursors[nextCursor] then return fail("RepeatedCursor") end
+            seenCursors[nextCursor]=true
+            cursor=nextCursor
+        end
+        return fail("PageLimit")
+    end
+
+    function api.Snapshot()
+        local result={}
+        for key,value in pairs(diagnostics) do result[key]=value end
+        return result
+    end
+    return api
+end
+
     local Players=game:GetService("Players")
     local localPlayer=Players.LocalPlayer or Players.PlayerAdded:Wait()
     local globals=getgenv()
@@ -299,6 +424,27 @@ end
     local profile=store.Load()
     local saved=profile and profile.Settings or {}
     local api={Store=store,Saved=saved,SourcePath="EvernightControl/main.luau",QueueStatus="ยังไม่ได้เตรียมโหลดต่อ"}
+    -- Server transfers are disabled at the user's request.
+-- Keep the current server ready without listing or joining any other server.
+function api.StartServerSelection(state)
+    state.UseCurrentServer=true state.AlwaysLeastPlayers=false
+    state.ServerSelectionToken=(state.ServerSelectionToken or 0)+1
+    for _,key in {"ServerSelectionThread","ServerSelectionRetryThread"}do
+        local thread=state[key]state[key]=nil
+        if type(thread)=="thread"and thread~=coroutine.running()then pcall(task.cancel,thread)end
+    end
+    if state.ServerSelectionFailureConnection then
+        pcall(function()state.ServerSelectionFailureConnection:Disconnect()end)
+        state.ServerSelectionFailureConnection=nil
+    end
+    state.ServerSelectionBusy=false state.ServerSelectionReady=true
+    state.ServerSelectionError=nil state.FloorTeleportStarted=false
+    state.ServerSelectionStatus="ใช้เซิร์ฟเวอร์ปัจจุบัน • ปิดการย้ายเซิร์ฟ"
+    local players=game:GetService("Players")
+    state.ServerSelectionTarget={Id=game.JobId,Playing=#players:GetPlayers(),MaxPlayers=players.MaxPlayers}
+    state.ServerSelectionReport={LastReason="CurrentServerOnly",SelectedId=game.JobId,Requests=0}
+    return true
+end
     local allowed={[13725495850]=true,[108438460215241]=true,[75952228303182]=true,
         [98460737039314]=true,[13761991508]=true,[76652994877247]=true}
     api.Allowed=allowed[game.PlaceId]==true
@@ -948,7 +1094,7 @@ end
 local previousSettings = {}
 if env.EternityAutoFarm and env.EternityAutoFarm.Alive then
     local old = env.EternityAutoFarm
-    previousSettings = {Enabled=old.FloorTravelResumeEnabled==true or old.Enabled, PersistenceEnabled=old.PersistenceEnabled, AutoJoinWorld=old.AutoJoinWorld, AutoResumeFarm=old.AutoResumeFarm, Mode = old.Mode, SelectedMob = old.SelectedMob, SelectedOre = old.SelectedOre,
+    previousSettings = {SecretRoomLoopEnabled=old.SecretRoomLoopEnabled, SecretRoomHover=old.SecretRoomHover, SecretRoomHoverHeight=old.SecretRoomHoverHeight, Enabled=old.FloorTravelResumeEnabled==true or old.Enabled, UseCurrentServer=old.UseCurrentServer, ServerSelectionExcluded=old.ServerSelectionExcluded, PersistenceEnabled=old.PersistenceEnabled, AutoJoinWorld=old.AutoJoinWorld, AutoResumeFarm=old.AutoResumeFarm, Mode = old.Mode, SelectedMob = old.SelectedMob, SelectedOre = old.SelectedOre,
         AutoTownWarp = old.AutoTownWarp, MenuVisible = old.MenuVisible, Version = old.Version,
         SelectedWeapon = old.SelectedWeapon, CraftMaterial = old.CraftMaterial, CraftQuantity = old.CraftQuantity,
         CraftedCount = old.CraftedCount, LastCraft = old.LastCraft,
@@ -968,7 +1114,7 @@ end
 continuity.Apply(previousSettings)
 local inheritedRestores = {}
 for _, old in filtergc("table", {Keys = {"Alive", "Enabled", "Selected", "SetEnabled", "Destroy"}}, false) do
-    if old.Version == "2.30" or old.Version == "2.29" or old.Version == "2.28" or old.Version == "2.27" or old.Version == "2.26" or old.Version == "2.25" or old.Version == "2.24" or old.Version == "2.23" or old.Version == "2.22" or old.Version == "2.21" or old.Version == "2.20" or old.Version == "2.19" or old.Version == "2.18" or old.Version == "2.17" or old.Version == "2.16" or old.Version == "1.0" or old.Version == "1.1" or old.Version == "1.2" or old.Version == "1.3" or old.Version == "1.4" or old.Version == "1.5" or old.Version == "1.6" or old.Version == "1.7" or old.Version == "1.8" or old.Version == "1.9" or old.Version == "2.0" or old.Version == "2.1" or old.Version == "2.2" or old.Version == "2.3" or old.Version == "2.4" or old.Version == "2.5" or old.Version == "2.6" or old.Version == "2.7" or old.Version == "2.8" or old.Version == "2.9" or old.Version == "2.10" or old.Version == "2.11" or old.Version == "2.12" or old.Version == "2.13" or old.Version == "2.14" or old.Version == "2.15" then
+    if old.Version == "2.41" or old.Version == "2.40" or old.Version == "2.39" or old.Version == "2.38" or old.Version == "2.37" or old.Version == "2.36" or old.Version == "2.35" or old.Version == "2.34" or old.Version == "2.33" or old.Version == "2.32" or old.Version == "2.31" or old.Version == "2.30" or old.Version == "2.29" or old.Version == "2.28" or old.Version == "2.27" or old.Version == "2.26" or old.Version == "2.25" or old.Version == "2.24" or old.Version == "2.23" or old.Version == "2.22" or old.Version == "2.21" or old.Version == "2.20" or old.Version == "2.19" or old.Version == "2.18" or old.Version == "2.17" or old.Version == "2.16" or old.Version == "1.0" or old.Version == "1.1" or old.Version == "1.2" or old.Version == "1.3" or old.Version == "1.4" or old.Version == "1.5" or old.Version == "1.6" or old.Version == "1.7" or old.Version == "1.8" or old.Version == "1.9" or old.Version == "2.0" or old.Version == "2.1" or old.Version == "2.2" or old.Version == "2.3" or old.Version == "2.4" or old.Version == "2.5" or old.Version == "2.6" or old.Version == "2.7" or old.Version == "2.8" or old.Version == "2.9" or old.Version == "2.10" or old.Version == "2.11" or old.Version == "2.12" or old.Version == "2.13" or old.Version == "2.14" or old.Version == "2.15" then
         old.Reloading=true
         if old.Enabled or old.AutoResumePending then old.FloorTravelResumeEnabled=true end
         local cleanup = task.spawn(function() pcall(old.Destroy) end)
@@ -1485,7 +1631,7 @@ local function createLowGraphicsController(state, options)
     return controller
 end
 
-local initialMode = previousSettings.Mode == "Quest" and "Quest" or previousSettings.Mode == "Sell" and "Sell" or previousSettings.Mode == "Craft" and "Craft" or previousSettings.Mode == "Mining" and "Mining" or "Combat"
+local initialMode = previousSettings.Mode == "SecretRoom" and "SecretRoom" or previousSettings.Mode == "Quest" and "Quest" or previousSettings.Mode == "Sell" and "Sell" or previousSettings.Mode == "Craft" and "Craft" or previousSettings.Mode == "Mining" and "Mining" or "Combat"
 local initialMob = previousSettings.SelectedMob or "Frenzy Boar"
 local initialStoneQuest = previousSettings.SelectedStoneQuest
 if currentFloor == 2 then
@@ -1505,9 +1651,9 @@ local state = {
     AutoTownWarp = previousSettings.AutoTownWarp ~= false, Warps = 0,
     Status = "พร้อมใช้งาน", Target = nil, Distance = 0,
     Attacks = 0, Kills = 0, DamageObserved = 0, PathStatus = "idle", LastError = nil,
-    MenuVisible = true, Version = "2.30", Connections = {},
+    MenuVisible = true, Version = "2.41", Connections = {},
     PersistenceEnabled=previousSettings.PersistenceEnabled~=false, AutoJoinWorld=previousSettings.AutoJoinWorld~=false, AutoResumeFarm=previousSettings.AutoResumeFarm~=false,
-    LastFloor=currentFloor, WorldOpen=false, FloorTravelling=false, PersistenceStatus=continuity.Store.Status,
+    UseCurrentServer=previousSettings.UseCurrentServer~=false, ServerSelectionExcluded=type(previousSettings.ServerSelectionExcluded)=="table" and previousSettings.ServerSelectionExcluded or {}, LastFloor=currentFloor, WorldOpen=false, FloorTravelling=false, PersistenceStatus=continuity.Store.Status,
     LowGraphics = previousSettings.LowGraphics ~= false, LowGraphicsStatus = "พร้อมลดกราฟิก", LowGraphicsChanged = 0, SettingsOpen = false, MaterialPickerOpen = false, UiScale = previousSettings.UiScale or 1,
     UiSearch = previousSettings.UiSearch or {Combat = "", Mining = "", Craft = "", Sell = ""},
     Travelling = false, TravelStatus = "", TravelDistance = 0,
@@ -1545,6 +1691,188 @@ local webhookBox, webhookToggle, webhookLabel
 local autoRespawnButton
 local view = {}
 local questBrowser
+-- A separate room picker: opening a chest may give loot or start a fight.
+function state.CreateSecretRoomPage(state, options)
+    local make, text, card, button = options.Make, options.Text, options.Card, options.Button
+    local colors, nav = options.Theme, options.Nav
+    local api, rows, connections = {}, {}, {}
+    local frame, tab, roomList, empty, status, totals, start, hoverToggle, hoverMinus, hoverPlus, hoverHeight
+    local lastRoomsAt, destroyed = -math.huge, false
+    local function connect(signal, callback)
+        local connection = options.Connect and options.Connect(signal, callback) or signal:Connect(callback)
+        table.insert(connections, connection)
+        return connection
+    end
+    local function paint(object, active)
+        if options.PaintButton then options.PaintButton(object, active) end
+    end
+    local function number(value)
+        return tostring(math.max(0, math.floor(tonumber(value) or 0)))
+    end
+    local function readRooms()
+        if type(state.GetSecretRooms) ~= "function" then return {} end
+        local ok, result = pcall(state.GetSecretRooms)
+        return ok and type(result) == "table" and result or {}
+    end
+    function api.Refresh(force)
+        if destroyed or not frame then return end
+        local running = state.Enabled and state.Mode == "SecretRoom"
+        start.Text = state.SecretRoomRetreating and "กำลังถอยไปจุดปลอดภัย" or running and "หยุดเคลียร์ห้อง" or "เริ่มเคลียร์ห้อง"
+        start.BackgroundColor3 = running and colors.Stop or colors.Accent
+        start.Active = type(state.SetEnabled) == "function" and not state.SecretRoomRetreating
+        local canAdjust = not state.Enabled and not state.SecretRoomRetreating
+        hoverToggle.Text = state.SecretRoomLoopEnabled and "วนห้อง: เปิด"or "วนห้อง: ปิด"
+        hoverToggle.Active = type(state.SetSecretRoomLoop)=="function"
+        hoverToggle.TextColor3 = hoverToggle.Active and colors.Text or colors.Muted
+        paint(hoverToggle, state.SecretRoomLoopEnabled == true)
+        hoverHeight.Text = number(tonumber(state.SecretRoomHoverHeight) or 9) .. " สตัด"
+        for _,control in {hoverMinus,hoverPlus} do
+            control.Active = canAdjust and type(state.SetSecretRoomHoverHeight) == "function"
+            control.TextColor3 = control.Active and colors.Text or colors.Muted
+        end
+        hoverHeight.TextColor3 = canAdjust and colors.Text or colors.Muted
+        hoverHeight.Visible,hoverMinus.Visible,hoverPlus.Visible=false,false,false
+        totals.Text = "ผ่าน "..number(state.SecretRoomRoomsCleared).." ห้อง  ·  รอบ "..number((state.SecretRoomLoopCycles or 0)+1)
+            .."  ·  จัดการ "..number(state.SecretRoomKills)
+        status.Text = state.SecretRoomStatus or "เลือกห้องในหอคอยชั้น 2 แล้วกดเริ่ม"
+        if not force and os.clock() - lastRoomsAt < 1 then return end
+        lastRoomsAt = os.clock()
+        local seen, count = {}, 0
+        for index, room in readRooms() do
+            if type(room) == "table" and type(room.Id) == "string" then
+                count += 1
+                seen[room.Id] = true
+                local row = rows[room.Id]
+                if not row then
+                    row = button("", UDim2.new(1, -8, 0, 28), UDim2.new(), roomList)
+                    row.Name, row.TextTransparency = "Room_" .. tostring(index), 1
+                    text("Title", "", 9, 0, 118, 28, row, 11, colors.Text)
+                    local detail = text("Detail", "", 127, 0, 117, 28, row, 10, colors.Muted)
+                    detail.TextXAlignment = Enum.TextXAlignment.Right
+                    local id = room.Id
+                    connect(row.Activated, function()
+                        if type(state.SelectSecretRoom) == "function" then state.SelectSecretRoom(id) end
+                        api.Refresh(true)
+                    end)
+                    rows[id] = row
+                end
+                row.LayoutOrder = index
+                row.Title.Text = (room.Selected and "✓ " or "") .. tostring(room.Name or "ห้องลับ")
+                local distance = tonumber(room.Distance)
+                row.Detail.Text = (room.Used and "เปิดแล้ว" or "พร้อมเปิด")
+                    .. (distance and (" · " .. number(distance) .. " ม.") or "")
+                row.Active = type(state.SelectSecretRoom) == "function"
+                row.Title.TextColor3 = room.Used and colors.Muted or colors.Text
+                paint(row, room.Selected == true)
+            end
+        end
+        for id, row in rows do
+            if not seen[id] then row:Destroy(); rows[id] = nil end
+        end
+        empty.Visible = count == 0
+        roomList.CanvasSize = UDim2.fromOffset(0, count * 32)
+    end
+    function api.Show(visible)
+        if destroyed or not frame then return end
+        frame.Visible = visible == true
+        paint(tab, frame.Visible)
+        if frame.Visible then api.Refresh() end
+    end
+    function api.Mount(parent)
+        if destroyed or frame then return frame end
+        frame = make("Frame", {Name = "SecretRoomContent", Position = UDim2.fromOffset(190, 64),
+            Size = UDim2.fromOffset(280, 306), BackgroundTransparency = 1, Visible = false}, parent)
+        api.Frame = frame
+        text("Title", "ห้องลับ · หอคอยชั้น 2", 0, 0, 202, 24, frame, 14, colors.Text).Font = Enum.Font.GothamBold
+        local refresh = button("รีเฟรช", UDim2.fromOffset(66, 24), UDim2.fromOffset(214, 0), frame)
+        refresh.Name, refresh.TextSize = "RefreshSecretRooms", 10
+        connect(refresh.Activated, function() api.Refresh(true) end)
+        local guide = card("ChestGuide", 0, 30, 280, 60, frame)
+        text("Title", "หีบสุ่มของหรือมอน", 10, 3, 150, 20, guide, 10, colors.AccentLight)
+        hoverToggle = button("", UDim2.fromOffset(108,22), UDim2.fromOffset(162,3), guide)
+        hoverToggle.Name, hoverToggle.TextSize, hoverToggle.AutoButtonColor = "ToggleSecretRoomLoop", 10, false
+        connect(hoverToggle.Activated, function()
+            if type(state.SetSecretRoomLoop)=="function"then state.SetSecretRoomLoop(not state.SecretRoomLoopEnabled)end
+            api.Refresh(true)
+        end)
+        text("Caption", "วาร์ป · 3 เวฟ · ล็อกเป้า · ไม่ถอย", 10, 24, 260, 14, guide, 9, colors.Muted)
+        text("HeightCaption", "ใช้สกิลที่เลือก · ปล่อยท่าจนจบ", 10, 38, 260, 20, guide, 10, colors.Muted)
+        hoverMinus = button("−", UDim2.fromOffset(24,20), UDim2.fromOffset(66,38), guide)
+        hoverPlus = button("+", UDim2.fromOffset(24,20), UDim2.fromOffset(162,38), guide)
+        hoverMinus.Name, hoverPlus.Name = "DecreaseSecretRoomHoverHeight", "IncreaseSecretRoomHoverHeight"
+        hoverMinus.TextSize, hoverPlus.TextSize = 12, 12
+        hoverHeight = text("HoverHeight", "", 96, 38, 60, 20, guide, 10, colors.Text)
+        hoverHeight.TextXAlignment = Enum.TextXAlignment.Center
+        text("AdjustHint", "", 194, 38, 76, 20, guide, 9, colors.Muted)
+        local function adjustHeight(change)
+            if state.Enabled or state.SecretRoomRetreating then return end
+            if type(state.SetSecretRoomHoverHeight) == "function" then
+                state.SetSecretRoomHoverHeight((tonumber(state.SecretRoomHoverHeight) or 9)+change)
+            end
+            api.Refresh(true)
+        end
+        connect(hoverMinus.Activated, function()adjustHeight(-1)end)
+        connect(hoverPlus.Activated, function()adjustHeight(1)end)
+        text("RoomCaption", "เลือกห้องที่ต้องการ", 0, 96, 280, 20, frame, 10, colors.Muted)
+        roomList = make("ScrollingFrame", {Name = "RoomList", Position = UDim2.fromOffset(0, 120),
+            Size = UDim2.fromOffset(280, 86), CanvasSize = UDim2.new(), BackgroundTransparency = 1,
+            BorderSizePixel = 0, ScrollBarThickness = 3, ScrollBarImageColor3 = colors.AccentLight,
+            ScrollingDirection = Enum.ScrollingDirection.Y}, frame)
+        make("UIListLayout", {Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder}, roomList)
+        empty = text("Empty", "ยังไม่พบห้อง · เข้าใกล้หอคอยแล้วรีเฟรช", 0, 145, 280, 36, frame, 11, colors.Muted)
+        empty.TextWrapped, empty.TextTruncate = true, Enum.TextTruncate.None
+        local progress = card("RoomProgress", 0, 214, 280, 52, frame)
+        totals = text("Totals", "", 10, 3, 260, 20, progress, 11, colors.AccentLight)
+        status = text("Status", "", 10, 24, 260, 24, progress, 10, colors.Text)
+        status.TextWrapped, status.TextTruncate = true, Enum.TextTruncate.None
+        start = button("", UDim2.fromOffset(280, 32), UDim2.fromOffset(0, 274), frame, colors.Accent)
+        start.Name, start.TextSize = "StartSecretRoom", 12
+        connect(start.Activated, function()
+            if type(state.SetEnabled) == "function" then state.SetEnabled(not state.Enabled) end
+            api.Refresh(true)
+        end)
+        tab = button("ห้องลับ", UDim2.fromOffset(152, 28), UDim2.fromOffset(0, 150), nav)
+        tab.Name, tab.TextTransparency, tab.AutoButtonColor = "SecretRoomTab", 1, false
+        local navLabel = text("NavLabel", "ห้องลับ", 12, 0, 128, 28, tab, 12, colors.Frost)
+        navLabel.Font, navLabel.TextXAlignment = Enum.Font.GothamMedium, Enum.TextXAlignment.Center
+        make("Frame", {Name = "ActiveRail", Position = UDim2.fromOffset(4, 5), Size = UDim2.fromOffset(2, 18),
+            BackgroundColor3 = colors.AccentLight, BorderSizePixel = 0, Visible = false}, tab)
+        connect(tab.Activated, function() state.SetMode("SecretRoom") end)
+        connect(tab.MouseEnter, function()
+            if options.Hover then options.Hover(tab, true) end
+            paint(tab, state.Mode == "SecretRoom" and not state.WorldOpen and not state.SettingsOpen)
+        end)
+        connect(tab.MouseLeave, function()
+            if options.Hover then options.Hover(tab, false) end
+            paint(tab, state.Mode == "SecretRoom" and not state.WorldOpen and not state.SettingsOpen)
+        end)
+        nav.Size = UDim2.fromOffset(152, 208)
+        local names = {"CombatTab", "MiningTab", "CraftTab", "SellTab", "QuestTab", "SecretRoomTab", "WorldTab"}
+        for index, name in names do
+            local existing = nav:FindFirstChild(name)
+            if existing then
+                existing.Position, existing.Size = UDim2.fromOffset(0, (index - 1) * 30), UDim2.fromOffset(152, 28)
+                if existing:FindFirstChild("NavLabel") then existing.NavLabel.Size = UDim2.fromOffset(128, 28) end
+                if existing:FindFirstChild("ActiveRail") then existing.ActiveRail.Position = UDim2.fromOffset(4, 5) end
+            end
+        end
+        api.Tab = tab
+        api.Refresh(true)
+        return frame
+    end
+    function api.Destroy()
+        if destroyed then return end
+        destroyed = true
+        for _, connection in connections do connection:Disconnect() end
+        table.clear(connections)
+        table.clear(rows)
+        if frame then frame:Destroy() end
+        if tab then tab:Destroy() end
+        api.Frame, api.Tab = nil, nil
+    end
+    return api
+end
+
 local worldController
 local theme = {
     Background = Color3.fromRGB(17, 12, 25), Surface = Color3.fromRGB(32, 23, 43), Inset = Color3.fromRGB(22, 16, 32),
@@ -1696,6 +2024,7 @@ local function oreChoiceName(name)
 end
 
 local function valid(m)
+    if state.Mode == "SecretRoom" then return state.SecretRoomController and state.SecretRoomController.IsTarget(m) or false end
     if state.Mode == "Quest" then return forgeQuest and forgeQuest.IsTarget(m) or false end
     if state.Mode == "Mining" then
         return isSelectedOre(m)
@@ -1715,7 +2044,10 @@ local function questCombatDelta(root,target,targetRoot)
     local kinds={nepenthesHuntQuest="Little Nepenthes",floor2MinibossApeQuest="Snow Ape King",
         floor2EliteTaurusQuest="Elite Taurus Sentinel"}
     local kind=kinds[state.QuestId]
-    if state.Mode=="Quest" and kind and target and target:GetAttribute("MobKind")==kind
+    local roomTarget=state.Mode=="SecretRoom" and state.SecretRoomController
+        and state.SecretRoomController.IsTarget(target) and targetRoot:IsA("BasePart")
+        and math.max(targetRoot.Size.X,targetRoot.Size.Z)>=6
+    if (roomTarget or state.Mode=="Quest" and kind and target and target:GetAttribute("MobKind")==kind)
         and targetRoot:IsA("BasePart") then
         return targetRoot:GetClosestPointOnSurface(root.Position)-root.Position,true
     end
@@ -1727,7 +2059,10 @@ local function questCombatApproach(c,root,target,targetRoot,planning)
     local kinds={nepenthesHuntQuest="Little Nepenthes",floor2MinibossApeQuest="Snow Ape King",
         floor2EliteTaurusQuest="Elite Taurus Sentinel"}
     local kind=kinds[state.QuestId]
-    if state.Mode~="Quest" or not kind or not target or target:GetAttribute("MobKind")~=kind
+    local roomTarget=state.Mode=="SecretRoom" and state.SecretRoomController
+        and state.SecretRoomController.IsTarget(target) and targetRoot and targetRoot:IsA("BasePart")
+        and math.max(targetRoot.Size.X,targetRoot.Size.Z)>=6
+    if (not roomTarget and (state.Mode~="Quest" or not kind or not target or target:GetAttribute("MobKind")~=kind))
         or not root or not targetRoot or not targetRoot:IsA("BasePart") then return nil end
     local position=root.Position
     local center=targetRoot.Position
@@ -1806,6 +2141,28 @@ do
     function motionController.Step(dt,focused)
         local active=state.Alive and (state.Enabled or state.Travelling)
         local _,h,root=character()
+        -- Ground path waypoints use the same frame writer as normal navigation.
+        if state.SecretRoomWalkGoal then
+            local walking=state.Alive and state.Mode=="SecretRoom" and (state.Enabled or state.SecretRoomRetreating)
+                and h and root and h.Health>0 and not state.Respawning and not focused
+                and not (autoSkills and autoSkills.Busy()) and not (potionController and potionController.Pending)
+            local direction=walking and state.SecretRoomWalkGoal-root.Position
+            direction=direction and Vector3.new(direction.X,0,direction.Z)
+            if direction and direction.Magnitude>.35 then
+                claim(h) h:Move(direction.Unit,false)
+            else
+                if h then h:Move(Vector3.zero,false)end
+                motionController.Release()
+            end
+            return
+        end
+        -- Native skills and ground travel own motion without competing writers.
+        if state.SecretRoomRetreating then motionController.Release() return end
+        if state.SecretRoomController and state.SecretRoomController.Active then
+            local defending=state.SecretRoomController.Defend()
+            local hovering=state.SecretRoomController.Active and state.SecretRoomController.HoverStep()
+            if hovering or defending then motionController.Release() return end
+        end
         local blocked=state.Respawning or state.StaminaRecovering
             or (potionController and potionController.Pending)
             or (autoSkills and autoSkills.Busy())
@@ -3079,10 +3436,22 @@ local function resolveAutoSkills()
     end
     function api.Next()
         if not state.SkillsEnabled or api.Busy() or os.clock()-api.LastAttempt<0.4 then return end
+        if state.Mode=="SecretRoom" then
+            local priorities={DeadlySins=1,ReapersTether=2,HowlingOctave=3,HorizontalSquare=4,VorpalStrike=6}
+            local best,rank
+            for slot=1,4 do
+                local id,def=native.skillForSlot(slot)
+                if id and def and state.SkillSelection[id]==true and native.CanCast(id,true)then
+                    local score=priorities[id]or 5
+                    if not rank or score<rank then best,rank={Slot=slot,Id=id,Name=def.Name},score end
+                end
+            end
+            return best
+        end
         for offset=1,4 do
-            local slot = (api.Cursor+offset-1)%4+1
-            local id,def = native.skillForSlot(slot)
-            if id and state.SkillSelection[id] == true and native.CanCast(id,true) then
+            local slot=(api.Cursor+offset-1)%4+1
+            local id,def=native.skillForSlot(slot)
+            if id and state.SkillSelection[id]==true and native.CanCast(id,true)then
                 return {Slot=slot,Id=id,Name=def.Name}
             end
         end
@@ -3092,7 +3461,7 @@ local function resolveAutoSkills()
         local targetRoot = target and mobRoot(target)
         local id = native.skillForSlot(row.Slot)
         if not state.Alive or not state.Enabled or not state.SkillsEnabled or not state.SkillSelection[row.Id]
-            or (state.Mode ~= "Combat" and state.Mode ~= "Quest") or not c or not valid(target) or not targetRoot
+            or (state.Mode ~= "Combat" and state.Mode ~= "Quest" and state.Mode ~= "SecretRoom") or not c or not valid(target) or not targetRoot
             or id ~= row.Id or (targetRoot.Position-root.Position).Magnitude > 14 or not native.CanCast(id,true) then return false end
         api.LastAttempt, api.Cursor = os.clock(), row.Slot
         local direction = targetRoot.Position-root.Position
@@ -6079,6 +6448,10 @@ local function updateStatus()
             or "ติ๊กเลือกอาวุธก่อนขาย"
         actionColor = state.Selling and theme.Stop or state.SellConfirmation and theme.Selected or batch.CanTravel and theme.Accent or theme.Disabled
         lockText = item.Locked and "ปลดล็อกชิ้นนี้" or "ล็อกชิ้นนี้"
+    elseif state.Mode == "SecretRoom" then
+        heading = state.SecretRoomStatus or "เลือกห้องลับในหอคอยชั้น 2"
+        detail = "จัดการ " .. uiNumber(state.SecretRoomKills) .. " ตัว · หลบ " .. uiNumber(state.SecretRoomDodges) .. " ครั้ง"
+        selection, action = "ห้องลับ", state.Enabled and "หยุดเคลียร์ห้อง" or "เริ่มเคลียร์ห้อง"
     elseif state.Mode == "Quest" then
         local selected = stoneQuestUiChoices[state.SelectedStoneQuest] or stoneQuestUiChoices.All
         local active = state.Enabled and stoneQuestUiChoices[state.QuestId] or nil
@@ -6193,7 +6566,7 @@ local function updateStatus()
         view.PaintButton(b,row.Selected)
     end
     view.SkillButton.Text = "สกิล " .. selectedSkills .. "/4"
-    view.SkillButton.Visible = state.Mode == "Combat" or state.Mode == "Quest"
+    view.SkillButton.Visible = state.Mode == "Combat" or state.Mode == "Quest" or state.Mode == "SecretRoom"
     view.SkillButton.Position = UDim2.fromOffset(182,state.Mode == "Quest" and (currentFloor == 2 and 180 or 174) or 30)
     view.SkillPicker.Visible = state.SkillPickerOpen and not state.SettingsOpen
     view.SkillsToggle.Text = state.SkillsEnabled and "ออโต้สกิล: เปิด" or "ออโต้สกิล: ปิด"
@@ -6410,6 +6783,7 @@ end
 
 function state.SetEnabled(enabled)
     if not state.Alive then return end
+    if enabled and state.ServerSelectionReady==false then state.Status=state.ServerSelectionStatus or "กำลังเลือกเซิร์ฟเวอร์คนน้อย" queueStatus() return end
     if not enabled and not continuity.InternalPause and not state.Reloading then state.AutoResumePending=false state.FloorTravelResumeEnabled=nil end
     if enabled and currentFloor == 2 and state.Mode == "Quest" then state.QuestAutoPage = true end
     if enabled and (state.Mode == "Craft" or state.Mode == "Sell" or state.Crafting or state.Selling or state.Travelling or state.FloorTravelling) then return end
@@ -6417,7 +6791,7 @@ function state.SetEnabled(enabled)
         forgeQuest.Reset()
         if enabled then forgeQuest.CloseMenus() end
     end
-    if not enabled then cancelAction() motionController.Release() end
+    if not enabled then if state.SecretRoomController then state.SecretRoomController.Stop() end cancelAction() motionController.Release() end
     if state.Enabled == (enabled == true) then pcall(continuity.Save,state,true) return end
     if enabled then
         for _, previous in inheritedRestores do
@@ -6454,6 +6828,7 @@ function state.SetEnabled(enabled)
         state.SteelGained, state.IronGained, state.CrystalliteGained = 0, 0, 0
         startWebhookTracking()
     end
+    if enabled and state.Mode == "SecretRoom" and (not state.SecretRoomController or not state.SecretRoomController.Start()) then updateStatus() return end
     state.Enabled = enabled == true
     pcall(continuity.Save,state,true)
     if state.Enabled then
@@ -6723,6 +7098,7 @@ end
 
 
 function state.Select(name)
+    if state.Mode == "SecretRoom" then if state.SecretRoomController then state.SecretRoomController.Select(name) end return end
     if state.Crafting or state.Selling or state.Travelling then return end
     if state.Mode == "Sell" then state.ToggleSellSelection(name) return end
     if state.Mode == "Craft" and not table.find(crafting.Types, name) then return end
@@ -6758,7 +7134,7 @@ function state.Select(name)
 end
 
 function state.SetMode(mode)
-    if mode ~= "Combat" and mode ~= "Mining" and mode ~= "Craft" and mode ~= "Sell" and mode ~= "Quest" then return end
+    if mode ~= "Combat" and mode ~= "Mining" and mode ~= "Craft" and mode ~= "Sell" and mode ~= "Quest" and mode ~= "SecretRoom" then return end
     state.ShowSettings(false)
     if state.Selling then return end
     if state.Crafting then state.CancelCraft() return end
@@ -6807,6 +7183,7 @@ end
 
 function state.Destroy()
     if state.Selling then state.ShowMenu(false) return end
+    if state.SecretRoomController then state.SecretRoomController.Destroy() end
     if potionController then potionController.Destroy() end
     if state.LowGraphicsController then state.LowGraphicsController.Destroy() end
     state.CancelServiceTravel("ปิดระบบ • หยุดเดินแล้ว")
@@ -6825,6 +7202,7 @@ function state.Destroy()
     for _, c in state.Connections do c:Disconnect() end
     RunService:UnbindFromRenderStep(cursorBinding)
     UIS.MouseBehavior, UIS.MouseIconEnabled = previousMouse, previousIcon
+    if view.SecretRoomPage then view.SecretRoomPage.Destroy() end
     if gui then gui:Destroy() end
     if env.EternityAutoFarm == state then env.EternityAutoFarm = nil end
 end
@@ -6855,6 +7233,10 @@ end
 
 refreshChoices = function()
     if not state.Alive then return end
+    if state.Mode == "SecretRoom" then
+        if view.SecretRoomPage then view.SecretRoomPage.Refresh() end
+        return
+    end
     local names, counts, saleEntries = {}, {}, {}
     local folder = workspace:FindFirstChild("Mobs")
     if state.Mode == "Combat" and folder then
@@ -7007,6 +7389,2000 @@ refreshChoices = function()
     end
 end
 
+-- Owns only its block requests; native dash physics and invulnerability stay native.
+function state.CreateSecretRoomDefense(options)
+    options = options or {}
+    for _, key in {"IsTarget", "Distance", "Ready", "MoveAway", "Dash", "DashActive",
+        "DashCooldown", "Stamina", "Prepare", "HoldBlock", "StopMove"} do
+        assert(type(options[key]) == "function", "Secret room defense requires " .. key)
+    end
+    local nowFunction = options.Now or os.clock
+    local function finite(v)
+        return type(v) == "number" and v == v and v > -math.huge and v < math.huge
+    end
+    local function setting(value, default, minimum, maximum)
+        return math.clamp(finite(value) and value or default, minimum, maximum)
+    end
+    local range = setting(options.Range, 25, 1, 60)
+    local grace = setting(options.ExpiryGrace, 0.45, 0.15, 1)
+    local lead = setting(options.DashLead, 0.14, 0.05, 0.2)
+    local prepareLead = setting(options.PrepareLead, 0.08, 0, 0.3)
+    local attackDuringWindup = options.AttackDuringWindup == true
+    local cost = setting(options.DashCost, 10, 0, 1000)
+    local limit = math.floor(setting(options.MaxPending, 16, 1, 16))
+    local pending, count, preparedFor, protectedRecord = {}, 0, nil, nil
+    local ownedBlock, ownedMovement, destroyed = false, false, false
+    local lastBlockTry = -math.huge
+    local status, nextDeadline, lastError, lastTelegraphAt = "Idle", nil, nil, nil
+    local counters = {Received=0, Ignored=0, Invalid=0, OutOfRange=0, Expired=0,
+        Dropped=0, Prepared=0, Dashes=0, DashRejected=0, Blocks=0, BlockReleased=0, Errors=0}
+    local api = {}
+    local function call(name, fallback, ...)
+        local ok, value = pcall(options[name], ...)
+        if not ok then
+            counters.Errors += 1
+            lastError = name .. ": " .. tostring(value)
+            return fallback
+        end
+        return value
+    end
+    local function clock()
+        local ok, value = pcall(nowFunction)
+        if ok and finite(value) then return value end
+        counters.Errors += 1
+        lastError = "Now: " .. (ok and "invalid clock" or tostring(value))
+        return nil
+    end
+    local function scoped(mob)
+        if mob == nil or call("IsTarget", false, mob) ~= true then return false end
+        local distance = call("Distance", nil, mob)
+        return finite(distance) and distance >= 0 and distance <= range
+    end
+    local function releaseBlock()
+        if not ownedBlock then return true end
+        if call("HoldBlock", false, false) == true then
+            ownedBlock, protectedRecord = false, nil
+            counters.BlockReleased += 1
+            return true
+        end
+        return false
+    end
+    local function pause()
+        ownedMovement = true
+        call("StopMove", nil)
+    end
+    function api.Reset(reason)
+        table.clear(pending)
+        count, preparedFor, nextDeadline, lastBlockTry = 0, nil, nil, -math.huge
+        releaseBlock()
+        if ownedMovement then call("StopMove", nil) end
+        ownedMovement = false
+        status = reason or "Idle"
+    end
+    local function prune(now)
+        for mob, record in pending do
+            if now >= record.Expires or now < record.ReceivedAt or not scoped(mob) then
+                pending[mob] = nil
+                count -= 1
+                counters.Expired += 1
+            end
+        end
+    end
+    -- Subscribe to PlayEffect externally; pass only native MobTelegraph model/windup.
+    function api.OnTelegraph(mob, windup)
+        if destroyed or call("Ready", false) ~= true then counters.Ignored += 1 return false end
+        local now = clock()
+        if not now or mob == nil or call("IsTarget", false, mob) ~= true then
+            counters.Ignored += 1 return false
+        end
+        if windup == nil then windup = 0.4 end -- Native Effects.MobTelegraph default.
+        if not finite(windup) or windup <= 0 or windup > 5 then
+            counters.Invalid += 1 return false
+        end
+        if not scoped(mob) then counters.OutOfRange += 1 return false end
+        prune(now)
+        local deadline = now + windup
+        if not pending[mob] and count >= limit then
+            local farthest, farthestDeadline
+            for other, record in pending do
+                if not farthestDeadline or record.Deadline > farthestDeadline then
+                    farthest, farthestDeadline = other, record.Deadline
+                end
+            end
+            counters.Dropped += 1
+            if farthestDeadline <= deadline then return false end
+            pending[farthest] = nil
+            count -= 1
+        end
+        local record = {Mob=mob, ReceivedAt=now, Deadline=deadline, Expires=deadline+grace,
+            DodgeAt=deadline-math.min(lead, windup*0.5), DashAttempted=false}
+        if not pending[mob] then count += 1 end
+        pending[mob] = record
+        lastTelegraphAt = now
+        counters.Received += 1
+        return true
+    end
+    function api.Step()
+        if destroyed then return false end
+        if call("Ready", false) ~= true then api.Reset("Unavailable") return false end
+        local now = clock()
+        if not now then api.Reset("ClockError") return false end
+        prune(now)
+        local imminent, recent
+        for _, record in pending do
+            if record.Deadline >= now then
+                if not imminent or record.Deadline < imminent.Deadline then imminent = record end
+            elseif not recent or record.Deadline > recent.Deadline then
+                recent = record
+            end
+        end
+        -- A previous attack's expiry grace must not hide a newer incoming hit.
+        imminent = imminent or recent
+        nextDeadline = imminent and imminent.Deadline or nil
+        -- Native dash keeps its own velocity/cleanup even after a telegraph expires.
+        if call("DashActive", false) == true then
+            pause()
+            status = "Dash"
+            return true
+        end
+        local protecting = ownedBlock and protectedRecord and now >= protectedRecord.ReceivedAt
+            and now < protectedRecord.Expires and scoped(protectedRecord.Mob)
+        if not imminent and protecting then
+            pause()
+            status = "Block"
+            return true
+        end
+        if not imminent then api.Reset("Idle") return false end
+        if attackDuringWindup and now < imminent.DodgeAt-prepareLead then
+            if recent then
+                -- A new distant deadline must not remove protection for a just-landed hit.
+                imminent = recent
+            elseif protecting then
+                pause()
+                status = "Block"
+                return true
+            else
+                if not releaseBlock() then pause() status = "Block" return true end
+                -- The caller may resume ordinary attacks until the short preparation window.
+                ownedMovement, preparedFor = false, nil
+                status = "Tracking"
+                return false
+            end
+        end
+        pause()
+        if preparedFor ~= imminent then
+            if call("Prepare", false) ~= true then status = "Preparing" return true end
+            preparedFor = imminent
+            counters.Prepared += 1
+        end
+        if now < imminent.DodgeAt then status = "Windup" return true end
+        local cooldown, stamina = call("DashCooldown", nil), call("Stamina", nil)
+        if not imminent.DashAttempted and now <= imminent.Deadline
+            and finite(cooldown) and cooldown <= 0 and finite(stamina) and stamina >= cost then
+            imminent.DashAttempted = true
+            if call("MoveAway", false, imminent.Mob) == true and releaseBlock() then
+                if call("Dash", false) == true then
+                    counters.Dashes += 1
+                    status = "Dash"
+                    return true
+                end
+                counters.DashRejected += 1
+            end
+        end
+        -- Block uses native checks and only counts as owned after observed success.
+        call("StopMove", nil)
+        if not ownedBlock and now-lastBlockTry >= 0.2 then
+            lastBlockTry = now
+            if call("HoldBlock", false, true) == true then
+                ownedBlock = true
+                counters.Blocks += 1
+            end
+        end
+        if ownedBlock and (not protectedRecord or imminent.Expires > protectedRecord.Expires) then
+            protectedRecord = imminent
+        end
+        status = ownedBlock and "Block" or "Wait"
+        return true
+    end
+    function api.Destroy()
+        if destroyed then return end
+        destroyed = true
+        api.Reset("Destroyed")
+    end
+    function api.Snapshot()
+        local result = {}
+        for key, value in counters do result[key] = value end
+        result.Pending, result.Status, result.NextDeadline = count, status, nextDeadline
+        result.OwnsBlock, result.OwnsMovement, result.Destroyed = ownedBlock, ownedMovement, destroyed
+        result.Range, result.LastError = range, lastError
+        result.AttackDuringWindup, result.PrepareLead, result.LastTelegraphAt = attackDuringWindup, prepareLead, lastTelegraphAt
+        return result
+    end
+    return api
+end
+
+-- Character-only hover ownership. The runtime validates room floor/roof in ClampGoal.
+function state.CreateSecretRoomHover(options)
+    options = options or {}
+    for _, key in {"Ready", "Enabled", "Target", "Character", "ClampGoal", "Move", "GetParts", "SetCollide", "GetCollide"} do
+        assert(type(options[key]) == "function", "Secret room hover requires " .. key)
+    end
+    local function finite(v)
+        return type(v) == "number" and v == v and v > -math.huge and v < math.huge
+    end
+    local function vector(v)
+        return typeof(v) == "Vector3" and finite(v.X) and finite(v.Y) and finite(v.Z)
+    end
+    local minimum = finite(options.MinHeight) and math.clamp(options.MinHeight, 1, 20) or 4
+    local maximum = finite(options.MaxHeight) and math.clamp(options.MaxHeight, minimum, 24) or math.max(minimum, 12)
+    local maximumParts = math.floor(finite(options.MaxParts) and math.clamp(options.MaxParts, 1, 256) or 256)
+    local character, rootPart, parts, initialTrue = nil, nil, {}, {}
+    local owned = {} -- Only parts initially true and actually attempted by this controller.
+    local active, wanted, destroyed = false, false, false
+    local status, lastError, height, lastGoal = "Idle", nil, 9, nil
+    local style = "Hover"
+    local orbitEnabled, orbitRadius, orbitSpeed = false, 5.5, 1.2
+    local orbitAngle, orbitTarget, orbitTime = 0, nil, nil
+    local counters = {Binds=0, CacheReads=0, Moves=0, CollisionWrites=0, RestoreWrites=0,
+        Errors=0, SkippedParts=0, Resets=0, InvalidHeight=0}
+    local api = {}
+    local function failure(name, value)
+        counters.Errors += 1
+        lastError = (name .. ": " .. tostring(value)):sub(1, 300)
+    end
+    local function call(name, ...)
+        local ok, value = pcall(options[name], ...)
+        if not ok then failure(name, value) end
+        return ok, value
+    end
+    local function optionValue(name)
+        if type(options[name]) == "function" then
+            local ok, value = call(name)
+            return ok and value or nil
+        end
+        return options[name]
+    end
+    local function orbitGoal(target, root)
+        orbitEnabled = optionValue("Orbit") == true
+        local radius, speed = optionValue("OrbitRadius"), optionValue("OrbitSpeed")
+        orbitRadius = finite(radius) and math.clamp(radius, 2, 8) or 5.5
+        orbitSpeed = finite(speed) and math.clamp(speed, 0.2, 3) or 1.2
+        if not orbitEnabled then
+            orbitAngle, orbitTarget, orbitTime = 0, nil, nil
+            return target.Position + Vector3.new(3, height, 0)
+        end
+        local nowOk, now = pcall(type(options.Now) == "function" and options.Now or os.clock)
+        if not nowOk then failure("Now", now) end
+        if not nowOk or not finite(now) then now = nil end
+        local identity = target.Id or target
+        if orbitTarget ~= identity then
+            local positionOk, position = pcall(function()return root.Position end)
+            local offset = positionOk and vector(position) and position - target.Position or nil
+            orbitAngle = offset and offset.X * offset.X + offset.Z * offset.Z > 0.000001
+                and math.atan2(offset.Z, offset.X) or 0
+            orbitAngle %= math.pi * 2
+            orbitTarget, orbitTime = identity, now
+        else
+            local elapsed = now and orbitTime and math.clamp(now - orbitTime, 0, 0.1) or 0
+            orbitAngle = (orbitAngle + elapsed * orbitSpeed) % (math.pi * 2)
+            orbitTime = now
+        end
+        return target.Position + Vector3.new(math.cos(orbitAngle) * orbitRadius, height,
+            math.sin(orbitAngle) * orbitRadius)
+    end
+    local function ownPart(part, owner)
+        local ok, yes = pcall(function()
+            return part:IsA("BasePart") and part:IsDescendantOf(owner)
+        end)
+        return ok and yes == true
+    end
+    local function flushRestores()
+        for part, record in owned do
+            if record.Restoring then
+                if not ownPart(part, record.Character) then
+                    -- Never write a part moved into the world or another character.
+                    owned[part] = nil
+                    counters.SkippedParts += 1
+                else
+                    local ok, result = call("SetCollide", part, true)
+                    if ok and result ~= false then
+                        owned[part] = nil
+                        counters.RestoreWrites += 1
+                    end
+                end
+            end
+        end
+    end
+    function api.Reset(reason)
+        local hadState = active or character ~= nil or next(owned) ~= nil
+        if hadState and type(options.BeforeReset) == "function" then
+            -- Let the runtime return beneath-floor characters to ground before collision resumes.
+            call("BeforeReset", reason or "Idle")
+        end
+        for _, record in owned do record.Restoring = true end
+        flushRestores()
+        character, rootPart, parts, initialTrue = nil, nil, {}, {}
+        active, lastGoal, status = false, nil, reason or "Idle"
+        orbitAngle, orbitTarget, orbitTime = 0, nil, nil
+        if hadState then counters.Resets += 1 end
+    end
+    local function bind(c, root)
+        local ok, found = call("GetParts", c)
+        counters.CacheReads += 1
+        if not ok then return false end
+        if type(found) ~= "table" then failure("GetParts", "expected an array") return false end
+        local nextParts, nextTrue, seen = {}, {}, {}
+        for index, part in ipairs(found) do
+            if index > maximumParts then counters.SkippedParts += 1 break end
+            if not seen[part] then
+                seen[part] = true
+                if ownPart(part, c) then
+                    local readOk, value = call("GetCollide", part)
+                    if not readOk then return false end
+                    if type(value) ~= "boolean" then failure("GetCollide", "expected a boolean") return false end
+                    nextParts[#nextParts+1] = part
+                    if value then nextTrue[part] = true end
+                else counters.SkippedParts += 1 end
+            end
+        end
+        character, rootPart, parts, initialTrue = c, root, nextParts, nextTrue
+        counters.Binds += 1
+        return true
+    end
+    function api.Step()
+        if destroyed then return false end
+        flushRestores()
+        for _, record in owned do
+            if record.Restoring then
+                -- Do not bind against our own temporary false value after a failed restore.
+                active, status = false, "Restoring"
+                return false
+            end
+        end
+        local enabledOk, enabled = call("Enabled")
+        wanted = enabledOk and enabled == true
+        if not wanted then api.Reset("Disabled") return false end
+        local readyOk, ready = call("Ready")
+        if not readyOk or ready ~= true then api.Reset("Unavailable") return false end
+        local charOk, c, h, root = pcall(options.Character)
+        if not charOk then failure("Character", c) api.Reset("NoCharacter") return false end
+        if c == nil or h == nil or root == nil or not finite(h.Health) or h.Health <= 0
+            or not ownPart(root, c) then api.Reset("NoCharacter") return false end
+        if character ~= nil and (character ~= c or rootPart ~= root) then api.Reset("Rebinding") end
+        local targetOk, target = call("Target")
+        if not targetOk or type(target) ~= "table" or target.Valid ~= true or not vector(target.Position) then
+            api.Reset("NoTarget") return false
+        end
+        local requestedHeight = 9
+        if type(options.Height) == "function" then
+            local heightOk, value = call("Height")
+            if not heightOk then api.Reset("HeightError") return false end
+            if finite(value) then requestedHeight = value elseif value ~= nil then counters.InvalidHeight += 1 end
+        end
+        height = math.clamp(requestedHeight, minimum, maximum)
+        local goal
+        if options.Goal ~= nil then
+            -- The runtime may supply an absolute goal using its verified floor geometry.
+            local goalOk
+            if type(options.Goal) == "function" then
+                goalOk, goal = call("Goal", target, root, height)
+            else
+                failure("Goal", "expected a function")
+            end
+            if not goalOk or (goal ~= nil and not vector(goal)) then
+                if goalOk then failure("Goal", "expected a finite Vector3 or nil") end
+                api.Reset("GoalError") return false
+            end
+            if goal == nil then
+                goal = orbitGoal(target, root)
+            else
+                orbitEnabled, orbitAngle, orbitTarget, orbitTime = false, 0, nil, nil
+            end
+        else
+            goal = orbitGoal(target, root)
+        end
+        local clampOk, safeGoal = call("ClampGoal", goal)
+        if not clampOk or not vector(safeGoal) then api.Reset("Blocked") return false end
+        if character == nil and not bind(c, root) then api.Reset("BindError") return false end
+        for _, part in parts do
+            if ownPart(part, character) then
+                local readOk, collide = call("GetCollide", part)
+                if not readOk or type(collide) ~= "boolean" then
+                    if readOk then failure("GetCollide", "expected a boolean") end
+                    api.Reset("CollisionError") return false
+                end
+                if collide then
+                    -- Save true before attempting a write so partial setter failures can restore it.
+                    if initialTrue[part] and not owned[part] then
+                        owned[part] = {Character=character, Restoring=false}
+                    end
+                    local writeOk, result = call("SetCollide", part, false)
+                    if not writeOk or result == false then api.Reset("CollisionError") return false end
+                    counters.CollisionWrites += 1
+                end
+            end
+        end
+        local moveOk, moved = call("Move", root, safeGoal, target.Position)
+        if not moveOk or moved == false then api.Reset("MoveError") return false end
+        local requestedStyle = optionValue("Style")
+        style = type(requestedStyle) == "string" and requestedStyle:sub(1, 32) or "Hover"
+        active, lastGoal, status = true, safeGoal, "Hovering"
+        counters.Moves += 1
+        return true -- Movement ownership only; this does not request an attack pause.
+    end
+    function api.Destroy()
+        if destroyed then return end
+        api.Reset("Destroyed")
+        destroyed = true
+    end
+    function api.Snapshot()
+        local changed, restoring = 0, 0
+        for _, record in owned do
+            changed += 1
+            if record.Restoring then restoring += 1 end
+        end
+        local out = {}
+        for key, value in counters do out[key] = value end
+        out.Enabled, out.Active, out.Destroyed = wanted, active, destroyed
+        out.Changed, out.Restoring, out.PartCount = changed, restoring, #parts
+        out.Height, out.Status, out.LastError = height, status, lastError
+        out.Style = style
+        out.Orbit, out.OrbitRadius, out.OrbitAngle, out.OrbitSpeed = orbitEnabled, orbitRadius, orbitAngle, orbitSpeed
+        if lastGoal then out.Goal = {X=lastGoal.X, Y=lastGoal.Y, Z=lastGoal.Z} end
+        return out
+    end
+    return api
+end
+
+-- Yielding, cancellable native walking. No world/character transforms or direct fallback.
+-- Path(start, goal) returns native waypoints ({Position, Action}) or nil, reason.
+-- Optional ValidateGoal(point) / Segment(from, to) must return true when supplied.
+-- ProjectLeg(start, partialGoal, false) may project only Y onto verified ground.
+function state.CreateSecretRoomWalk(options)
+    options=options or {}
+    for _,key in {"Path","Character","Ready","MoveTo","Jump","StopMove"} do
+        assert(type(options[key])=="function","Secret room walk requires "..key)
+    end
+    local function finite(value)
+        return type(value)=="number" and value==value and value>-math.huge and value<math.huge
+    end
+    local function vector(value)
+        return typeof(value)=="Vector3" and finite(value.X) and finite(value.Y) and finite(value.Z)
+    end
+    local function number(key,default,minimum,maximum)
+        local value=options[key]
+        return math.clamp(finite(value) and value or default,minimum,maximum)
+    end
+    local legLimit=number("MaxLegDistance",450,20,450)
+    local partialDistance=number("PartialLegDistance",legLimit,20,legLimit)
+    local arrival=number("ArrivalRadius",3,0.5,5)
+    local waypointRadius=number("WaypointRadius",2.25,0.5,3)
+    local verticalTolerance=number("VerticalTolerance",6,1,8)
+    local routeTimeout=number("RouteTimeout",60,2,120)
+    local totalTimeout=number("TotalTimeout",600,5,1800)
+    local stuckTimeout=number("StuckTimeout",3,0.5,8)
+    local minimumProgress=number("MinimumProgress",0.5,0.05,2)
+    local poll=number("PollInterval",0.1,0.03,0.25)
+    local refresh=number("MoveRefresh",2,0.25,3)
+    local maxReplans=math.floor(number("MaxReplans",3,0,3))
+    local maxLegs=math.floor(number("MaxLegs",32,1,64))
+    local maxWaypoints=math.floor(number("MaxWaypoints",512,1,1024))
+    local nowFunction=options.Now or os.clock
+    local waitFunction=options.Wait or task.wait
+    assert(type(nowFunction)=="function","Secret room walk requires a clock")
+    assert(type(waitFunction)=="function","Secret room walk requires a wait function")
+    for _,key in {"ValidateGoal","Segment","Status","ProjectLeg"} do
+        assert(options[key]==nil or type(options[key])=="function","Invalid walk option "..key)
+    end
+    local api={Token=0,Running=false,Destroyed=false}
+    local snapshot={Status="Idle",Replans=0,Legs=0,Paths=0,Moves=0,Jumps=0,Waits=0}
+    local function notify(status,message)
+        snapshot.Status=status
+        if options.Status then
+            local ok,problem=pcall(options.Status,message,status)
+            if not ok then snapshot.StatusError=tostring(problem):sub(1,250) end
+        end
+    end
+    local function stopMove()
+        local ok,problem=pcall(options.StopMove)
+        if not ok then snapshot.CleanupError=tostring(problem):sub(1,250) end
+    end
+    local function reached(position,goal,radius)
+        local delta=goal-position
+        return Vector3.new(delta.X,0,delta.Z).Magnitude<=radius
+            and math.abs(delta.Y)<=verticalTolerance
+    end
+    function api.Cancel(reason)
+        local active=api.Running
+        api.Token+=1 api.Running=false
+        if active then
+            snapshot.Reason=reason or "Cancelled"
+            stopMove()
+            notify("Cancelled","หยุดเดินแล้ว")
+        end
+        return active
+    end
+    function api.WalkTo(goal)
+        if api.Destroyed then return false,"Destroyed" end
+        if api.Running then return false,"Busy" end
+        api.Token+=1 api.Running=true
+        local token=api.Token
+        local walkSnapshot={Status="Starting",Replans=0,Legs=0,Paths=0,Moves=0,Jumps=0,Waits=0}
+        snapshot=walkSnapshot
+        local snapshot=walkSnapshot
+        local ctx={Character=nil,Humanoid=nil,Root=nil,LastNow=nil,StartedAt=nil,Frozen=0}
+        local function check()
+            if api.Destroyed or api.Token~=token or not api.Running then return nil,"Cancelled" end
+            local ok,ready=pcall(options.Ready)
+            if not ok then return nil,"ReadyError: "..tostring(ready) end
+            if ready~=true then return nil,"Unavailable" end
+            local charOk,c,h,root=pcall(options.Character)
+            if not charOk then return nil,"CharacterError: "..tostring(c) end
+            if not c or not h or not root or not finite(h.Health) then return nil,"NoCharacter" end
+            if h.Health<=0 then return nil,"Dead" end
+            if ctx.Character and c~=ctx.Character then return nil,"CharacterChanged" end
+            if ctx.Root and (root~=ctx.Root or h~=ctx.Humanoid) then return nil,"RootChanged" end
+            if not vector(root.Position) then return nil,"InvalidCharacterPosition" end
+            local clockOk,now=pcall(nowFunction)
+            if not clockOk or not finite(now) then return nil,"ClockError" end
+            if api.Destroyed or api.Token~=token or not api.Running then return nil,"Cancelled" end
+            if ctx.LastNow and now<ctx.LastNow then return nil,"ClockReversed" end
+            if not ctx.Character then
+                ctx.Character,ctx.Humanoid,ctx.Root=c,h,root
+                ctx.StartedAt=now snapshot.StartedAt=now
+            end
+            ctx.LastNow=now
+            if now-ctx.StartedAt>=totalTimeout then return nil,"TotalTimeout" end
+            return {Root=root,Position=root.Position,Now=now}
+        end
+        local function validate(point)
+            if not vector(point) then return false,"InvalidGoal" end
+            if options.ValidateGoal then
+                local ok,accepted=pcall(options.ValidateGoal,point)
+                if not ok then return false,"GoalValidationError: "..tostring(accepted) end
+                if accepted~=true then return false,"UnsupportedGoal" end
+            end
+            return true
+        end
+        local function segment(from,to)
+            if (to-from).Magnitude>legLimit+0.01 then return false,"SegmentTooLong" end
+            if options.Segment then
+                local ok,accepted=pcall(options.Segment,from,to)
+                if not ok then return false,"SegmentError: "..tostring(accepted) end
+                if accepted~=true then return false,"UnsafeSegment" end
+            end
+            return true
+        end
+        local function waitStep()
+            local valid,problem=check()
+            if not valid then return nil,problem end
+            local before=ctx.LastNow
+            local ok,problem=pcall(waitFunction,poll)
+            snapshot.Waits+=1
+            if not ok then return nil,"WaitError: "..tostring(problem) end
+            local observed,reason=check()
+            if not observed then return nil,reason end
+            ctx.Frozen=observed.Now==before and ctx.Frozen+1 or 0
+            if ctx.Frozen>=12 then return nil,"ClockStalled" end
+            return observed
+        end
+        local function readWaypoints(path,legGoal)
+            if type(path)~="table" or #path==0 or #path>maxWaypoints then return nil,"InvalidPath" end
+            local rows={}
+            for index=1,#path do
+                local value=path[index]
+                local ok,point,action=pcall(function()
+                    if vector(value) then return value end
+                    return value.Position,value.Action
+                end)
+                if not ok or not vector(point) then return nil,"InvalidWaypoint" end
+                rows[index]={Position=point,Jump=action=="Jump" or action==Enum.PathWaypointAction.Jump}
+            end
+            if not reached(rows[#rows].Position,legGoal,arrival) then return nil,"IncompletePath" end
+            return rows
+        end
+        local function follow(rows,routeStart)
+            for index,row in rows do
+                snapshot.Waypoint=index snapshot.Waypoints=#rows
+                local observed,reason=check()
+                if not observed then return false,reason,true end
+                if observed.Now-routeStart>=routeTimeout then return false,"RouteTimeout" end
+                if not reached(observed.Position,row.Position,waypointRadius) then
+                    local valid,problem=validate(row.Position)
+                    if not valid then return false,problem end
+                    local safe,unsafe=segment(observed.Position,row.Position)
+                    if not safe then return false,unsafe end
+                    observed,reason=check()
+                    if not observed then return false,reason,true end
+                    -- Jump before MoveTo, once for this waypoint; native humanoid owns the motion.
+                    if row.Jump then
+                        local jumped,value=pcall(options.Jump)
+                        if not jumped or value==false then return false,"JumpRejected" end
+                        snapshot.Jumps+=1
+                    end
+                    observed,reason=check()
+                    if not observed then return false,reason,true end
+                    local moved,value=pcall(options.MoveTo,row.Position)
+                    if not moved or value==false then return false,"MoveRejected" end
+                    snapshot.Moves+=1
+                    local best=(row.Position-observed.Position).Magnitude
+                    local progressAt,sentAt=observed.Now,observed.Now
+                    while true do
+                        observed,reason=waitStep()
+                        if not observed then return false,reason,true end
+                        if reached(observed.Position,row.Position,waypointRadius) then break end
+                        if observed.Now-routeStart>=routeTimeout then return false,"RouteTimeout" end
+                        local remaining=(row.Position-observed.Position).Magnitude
+                        if remaining<=best-minimumProgress then best=remaining progressAt=observed.Now end
+                        if observed.Now-progressAt>=stuckTimeout then return false,"Stuck" end
+                        if observed.Now-sentAt>=refresh then
+                            safe,unsafe=segment(observed.Position,row.Position)
+                            if not safe then return false,unsafe end
+                            observed,reason=check()
+                            if not observed then return false,reason,true end
+                            moved,value=pcall(options.MoveTo,row.Position)
+                            if not moved or value==false then return false,"MoveRejected" end
+                            snapshot.Moves+=1 sentAt=observed.Now
+                        end
+                    end
+                end
+            end
+            return true
+        end
+        local function run()
+            local valid,problem=validate(goal)
+            if not valid then return false,problem end
+            while snapshot.Legs<maxLegs do
+                local observed,reason=check()
+                if not observed then return false,reason end
+                if reached(observed.Position,goal,arrival) then return true,"Arrived" end
+                local delta=goal-observed.Position
+                local partial=delta.Magnitude>legLimit
+                local legGoal=partial and observed.Position+delta.Unit*partialDistance or goal
+                if partial and options.ProjectLeg then
+                    local projectedOk,projected,projectReason=pcall(options.ProjectLeg,observed.Position,legGoal,false)
+                    if not projectedOk then return false,"LegProjectionError: "..tostring(projected) end
+                    if projected==nil then return false,type(projectReason)=="string" and projectReason or "UnsupportedLeg" end
+                    if not vector(projected) then return false,"InvalidLegProjection" end
+                    if math.abs(projected.X-legGoal.X)>.01 or math.abs(projected.Z-legGoal.Z)>.01 then
+                        return false,"HorizontalLegProjection"
+                    end
+                    if (projected-observed.Position).Magnitude>legLimit+.01 then return false,"ProjectedLegTooLong" end
+                    legGoal=projected
+                end
+                local supported,unsupported=validate(legGoal)
+                if not supported then return false,unsupported end
+                snapshot.Legs+=1
+                snapshot.LegGoal=legGoal snapshot.Goal=goal
+                local legDone=false
+                while not legDone do
+                    observed,reason=check()
+                    if not observed then return false,reason end
+                    local routeStart=observed.Now
+                    notify("Planning","กำลังหาเส้นทางไปจุดหมาย")
+                    -- Status callbacks may cancel; never issue an action afterward without checking.
+                    observed,reason=check()
+                    if not observed then return false,reason end
+                    local pathOk,path,pathReason=pcall(options.Path,observed.Position,legGoal)
+                    snapshot.Paths+=1
+                    observed,reason=check() -- ComputeAsync can yield or finish after cancellation.
+                    if not observed then return false,reason end
+                    local rows
+                    if observed.Now-routeStart>=routeTimeout then reason="RouteTimeout"
+                    elseif not pathOk then reason="PathError: "..tostring(path)
+                    elseif path==nil then reason=type(pathReason)=="string" and pathReason or "NoPath"
+                    else rows,reason=readWaypoints(path,legGoal) end
+                    local fatal=false
+                    if rows then
+                        notify("Walking","กำลังเดินไปจุดหมาย")
+                        local followed
+                        followed,reason,fatal=follow(rows,routeStart)
+                        if followed then
+                            observed,reason=check()
+                            if not observed then return false,reason end
+                            if reached(observed.Position,legGoal,arrival) then legDone=true
+                            else reason="IncompleteTravel" end
+                        end
+                    end
+                    if not legDone then
+                        if fatal then return false,reason end
+                        if api.Token~=token or not api.Running then return false,"Cancelled" end
+                        stopMove()
+                        snapshot.LastRouteError=tostring(reason):sub(1,250)
+                        if snapshot.Replans>=maxReplans then return false,reason end
+                        snapshot.Replans+=1
+                        notify("Replanning","เดินติด • กำลังหาเส้นทางใหม่")
+                        observed,reason=waitStep()
+                        if not observed then return false,reason end
+                    end
+                end
+            end
+            local observed,reason=check()
+            if observed and reached(observed.Position,goal,arrival) then return true,"Arrived" end
+            return false,reason or "LegLimit"
+        end
+        local ok,arrived,reason=pcall(run)
+        if not ok then reason="WalkError: "..tostring(arrived) arrived=false end
+        -- A replaced/cancelled waiter must never stop a newer walk's movement.
+        if api.Token==token then
+            api.Running=false stopMove()
+            snapshot.Reason=tostring(reason):sub(1,300)
+            snapshot.Elapsed=ctx.StartedAt and ctx.LastNow and ctx.LastNow-ctx.StartedAt or 0
+            notify(arrived and "Arrived" or "Stopped",arrived and "ถึงจุดหมายแล้ว" or "เดินต่อไม่ได้ • หยุดแล้ว")
+        end
+        return arrived==true,reason
+    end
+    function api.Snapshot()
+        local out={}
+        for key,value in snapshot do out[key]=value end
+        out.Active,out.Token,out.Destroyed=api.Running,api.Token,api.Destroyed
+        out.MaxLegDistance,out.PartialLegDistance,out.MaxReplans=legLimit,partialDistance,maxReplans
+        return out
+    end
+    function api.Destroy()
+        if api.Destroyed then return end
+        api.Cancel("Destroyed") api.Destroyed=true
+    end
+    return api
+end
+
+-- Pure admission policy. Native casts, movement, damage and cooldowns remain native.
+function state.CreateSecretRoomSkillWindow(options)
+    options = options or {}
+    for _, key in {"Ready", "NativeBusy", "PendingDefense"} do
+        assert(type(options[key]) == "function", "Secret room skill window requires " .. key)
+    end
+    assert(options.Now == nil or type(options.Now) == "function", "Invalid skill window clock")
+    local nowFunction = options.Now or os.clock
+    local firstHits = {DeadlySins=0.195, HowlingOctave=0.22, HorizontalSquare=0.23054795668318, VorpalStrike=0.34}
+    local function finite(value)
+        return type(value) == "number" and value == value and value > -math.huge and value < math.huge
+    end
+    local grace = finite(options.ExpiryGrace) and math.clamp(options.ExpiryGrace, 0, 1) or 0.2
+    local margin = 0.12
+    local api = {}
+    local last = {Reason="Idle",Checks=0,Allowed=0,Errors=0}
+    local function read(name, callback)
+        local ok, value = pcall(callback)
+        if not ok then
+            last.Errors += 1
+            last.LastError = name .. ": " .. tostring(value)
+            return nil, false
+        end
+        return value, true
+    end
+    local function busy()
+        local value, ok = read("NativeBusy", options.NativeBusy)
+        if not ok or type(value) ~= "boolean" then
+            last.NativeBusy = nil
+            return nil
+        end
+        last.NativeBusy = value
+        return value
+    end
+    local function reject(reason)
+        last.Reason, last.CanStart = reason, false
+        return false
+    end
+    function api.CanStart(row)
+        last.Checks += 1
+        last.SkillId, last.FirstHit, last.NextDeadline, last.CheckedAt = nil, nil, nil, nil
+        if type(row) ~= "table" or type(row.Id) ~= "string" or row.Id == "" or #row.Id > 128
+            or not finite(row.Slot) or row.Slot % 1 ~= 0 or row.Slot < 1 or row.Slot > 4
+            or row.Selected == false then return reject("InvalidRow") end
+        last.SkillId, last.FirstHit = row.Id, firstHits[row.Id] or 0.25
+        local isBusy = busy()
+        if isBusy == nil then return reject("NativeBusyUnavailable") end
+        if isBusy then return reject("NativeBusy") end
+        local ready, readyOk = read("Ready", options.Ready)
+        last.Ready = readyOk and ready == true
+        if not last.Ready then return reject("NotReady") end
+        local now, clockOk = read("Now", nowFunction)
+        if not clockOk or not finite(now) then return reject("InvalidClock") end
+        last.CheckedAt = now
+        local defense, defenseOk = read("PendingDefense", options.PendingDefense)
+        if not defenseOk or type(defense) ~= "table" or not finite(defense.Pending)
+            or defense.Pending < 0 or defense.Pending % 1 ~= 0 then return reject("InvalidDefense") end
+        last.Pending = defense.Pending
+        if defense.Pending > 0 then
+            local deadline = defense.NextDeadline
+            if not finite(deadline) then return reject("InvalidDeadline") end
+            last.NextDeadline = deadline
+            if now <= deadline + grace and deadline <= now + last.FirstHit + margin then
+                return reject("ImminentDefense")
+            end
+        end
+        last.Reason, last.CanStart = "WindowOpen", true
+        last.Allowed += 1
+        return true
+    end
+    function api.ShouldDefend()
+        -- Never cancel a native skill merely to service a queued defense request.
+        return busy() == false
+    end
+    function api.Snapshot()
+        local result = {}
+        for key, value in last do result[key] = value end
+        result.Margin, result.ExpiryGrace = margin, grace
+        return result
+    end
+    return api
+end
+
+-- Native Floor 2 treasure rooms. Hover owns only the current character's collision.
+function state.ResolveSecretRoom()
+    local native=require(player.PlayerScripts.Client.Systems.Combat)
+    local api={Active=false,Token=0,Phase="Idle",Used={},Seen={},Kills=0,Dodges=0,OpenCount=0}
+    local rooms,session,defense,entryThread,hover,walker,skillWindow,finishRoom
+    local ownedLight,ownedLightCharacter
+    local releaseLock=function()end
+    local requiredWaves,finalQuiet,waveWaitLimit=3,8,90
+    local retreatHealthRatio=0.30
+    -- Continue fighting through low health unless explicitly opted into retreat.
+    state.SecretRoomAutoRetreat=previousSettings.SecretRoomAutoRetreat==true
+    state.SecretRoomInstantEntry=true
+    state.SecretRoomLoopEnabled=previousSettings.SecretRoomLoopEnabled~=false
+    state.SecretRoomRoomsCleared=0 state.SecretRoomLoopCycles=0
+    api.RetryAfter={}
+    -- Resume only the supported ground strategy after the failed aerial trials.
+    state.SecretRoomHover=false
+    state.SecretRoomHoverHeight=math.clamp(math.floor(tonumber(previousSettings.SecretRoomHoverHeight) or 9),4,10)
+    -- This experimental position is deliberately not resumed after reload.
+    state.SecretRoomUnderground=false state.SecretRoomUndergroundDepth=2.5
+    local function status(message)
+        state.SecretRoomStatus=message
+        if state.Mode=="SecretRoom" then state.Status=message end
+        queueStatus()
+    end
+    local function describe()
+        local dungeon=workspace:FindFirstChild("Dungeon")
+        local out={}
+        if currentFloor~=2 or not dungeon then return out end
+        for _,model in dungeon:QueryDescendants("Model#TrapRoom") do
+            local zone=model:FindFirstChild("SpawnZone")
+            local chest=model:FindFirstChild("Chest")
+            local main=chest and chest:FindFirstChild("Main")
+            local prompt=main and main:FindFirstChildOfClass("ProximityPrompt")
+            if zone and zone:IsA("BasePart") and main and main:IsA("BasePart")
+                and prompt and prompt.ObjectText=="Treasure Chest" then
+                out[#out+1]={Model=model,Zone=zone,Chest=chest,Main=main,Prompt=prompt,
+                    Id=string.format("%.1f:%.1f:%.1f",zone.Position.X,zone.Position.Y,zone.Position.Z)}
+            end
+        end
+        table.sort(out,function(a,b)return a.Id<b.Id end)
+        for i,row in out do row.Name="ห้อง "..i end
+        return out
+    end
+    local function inside(room,position,padding)
+        if not room or not room.Zone:IsDescendantOf(room.Model) or not room.Model.Parent then return false end
+        local p=room.Zone.CFrame:PointToObjectSpace(position)
+        local h=room.Zone.Size/2+Vector3.one*(padding or 0)
+        return math.abs(p.X)<=h.X and math.abs(p.Y)<=h.Y and math.abs(p.Z)<=h.Z
+    end
+    local function playerInside(position)
+        if not session or not session.Room.Zone:IsDescendantOf(session.Room.Model) then return false end
+        local room=session.Room
+        local localPoint=room.Zone.CFrame:PointToObjectSpace(position)
+        local half=room.Zone.Size/2
+        local allowance=state.SecretRoomUnderground and state.SecretRoomUndergroundDepth+1 or 3
+        local minimum=session.FloorY and session.FloorY-allowance or room.Zone.Position.Y-half.Y-3
+        local maximum=session.CeilingY and session.CeilingY-1 or room.Zone.Position.Y+half.Y+3
+        return math.abs(localPoint.X)<=half.X+3 and math.abs(localPoint.Z)<=half.Z+3
+            and position.Y>=minimum and position.Y<=maximum
+    end
+    local function land(bound)
+        local c,h,root=character()
+        if not c or not h or not root or h.Health<=0 then return false end
+        if bound and c~=bound.Character then return false end
+        local params=RaycastParams.new()
+        params.RespectCanCollide=true params.FilterType=Enum.RaycastFilterType.Exclude
+        params.FilterDescendantsInstances={c,workspace.Mobs}
+        if state.SecretRoomUnderground and bound and bound.FloorY and c==bound.Character then
+            local room=bound.Room
+            local point=room.Zone.CFrame:PointToObjectSpace(root.Position)
+            local half=room.Zone.Size/2
+            if math.abs(point.X)>half.X+3 or math.abs(point.Z)>half.Z+3 then return true end
+            if root.Position.Y<bound.FloorY+0.5 then
+                params.FilterDescendantsInstances={c,workspace.Mobs,room.Chest}
+                local function recoverAt(position)
+                    local origin=Vector3.new(position.X,bound.FloorY+3,position.Z)
+                    local hit=workspace:Raycast(origin,Vector3.new(0,-6,0),params)
+                    if not hit or hit.Normal.Y<0.6 or math.abs(hit.Position.Y-bound.FloorY)>1.5 then return false end
+                    local target=hit.Position+Vector3.new(0,h.HipHeight+root.Size.Y/2+0.1,0)
+                    root.CFrame=CFrame.new(target)*root.CFrame.Rotation root.AssemblyLinearVelocity=Vector3.zero
+                    return true
+                end
+                if recoverAt(root.Position) or recoverAt(room.Zone.Position) then return true end
+                local ground=bound.GroundPart
+                if ground and ground:IsA("BasePart") and ground:IsDescendantOf(workspace)
+                    and ground.CanCollide and ground.CFrame==bound.GroundCFrame and bound.LandingPoint then
+                    root.CFrame=CFrame.new(bound.LandingPoint)*root.CFrame.Rotation
+                    root.AssemblyLinearVelocity=Vector3.zero return true
+                end
+                state.SecretRoomError="UndergroundFloorRecoveryUnavailable"
+                return false
+            end
+        end
+        local hit=workspace:Raycast(root.Position,Vector3.new(0,-40,0),params)
+        if hit and hit.Normal.Y>0.6 then
+            local point=hit.Position+Vector3.new(0,h.HipHeight+root.Size.Y/2+0.1,0)
+            root.CFrame=CFrame.new(point)*root.CFrame.Rotation root.AssemblyLinearVelocity=Vector3.zero
+        end
+    end
+    function api.Rooms()
+        rooms=describe()
+        local _,_,root=character()
+        local out={}
+        for _,row in rooms do out[#out+1]={Id=row.Id,Name=row.Name,
+            Distance=root and (root.Position-row.Zone.Position).Magnitude or 0,
+            Selected=row.Id==state.SelectedSecretRoom,Used=api.Used[row.Id]==true} end
+        return out
+    end
+    function api.Select(id)
+        if api.Active or state.Enabled then return false end
+        rooms=describe()
+        for _,row in rooms do if row.Id==id then
+            state.SelectedSecretRoom=id status("เลือก"..row.Name.." • กดเริ่ม") return true
+        end end
+        return false
+    end
+    local function current(token)
+        return api.Active and session and api.Token==token and state.Alive and state.Enabled
+            and state.Mode=="SecretRoom" and player.Character==session.Character
+    end
+    function api.IsTarget(mob)
+        if not api.Active or not session or not state.Enabled or not state.Alive
+            or state.Mode~="SecretRoom" or player.Character~=session.Character
+            or not mob or typeof(mob)~="Instance"
+            or mob.Parent~=workspace:FindFirstChild("Mobs") or not mob:IsA("Model") then return false end
+        local owner=mob:GetAttribute("StoryOwner")
+        if owner~=nil then return false end -- Never take story/private quest enemies.
+        local part=mobRoot(mob)
+        local health=mob:GetAttribute("Health")
+        return part~=nil and mob:GetAttribute("MobKind")~=nil and not mob:GetAttribute("IsDead")
+            and type(health)=="number" and health>0 and inside(session.Room,part.Position,0.5)
+    end
+    local function completionSnapshot(bound)
+        local out={SawMobs=false,Tracked=0,ConfirmedKills=0,Alive=0,UnknownRemoved=0,
+            Overflow=false,Completed=false,Connections=0,WavesStarted=0,WavesCleared=0,RequiredWaves=requiredWaves}
+        if not bound then return out end
+        out.SawMobs=bound.SawMobs==true
+        out.Tracked=bound.TrackedCount or 0
+        out.ConfirmedKills=bound.ConfirmedKills or 0
+        out.Overflow=bound.TrackingOverflow==true
+        out.Completed=bound.Completed==true
+        out.WavesStarted=bound.WavesStarted or 0 out.WavesCleared=bound.WavesCleared or 0
+        for _,row in bound.Tracked or {} do
+            if not row.Dead then
+                if row.Unavailable then out.UnknownRemoved+=1 else out.Alive+=1 end
+            end
+            for _,connection in row.Connections do
+                if connection.Connected then out.Connections+=1 end
+            end
+        end
+        return out
+    end
+    local function disconnectTracked(bound)
+        if not bound then return end
+        for _,row in bound.Tracked or {} do
+            for _,connection in row.Connections do connection:Disconnect() end
+        end
+    end
+    local function observeTracked(bound,row)
+        if session~=bound or not api.Active or api.Token~=bound.Token or row.Dead then return end
+        local health=row.Model:GetAttribute("Health")
+        if row.Model:GetAttribute("IsDead")==true or (type(health)=="number" and health<=0) then
+            row.Dead=true row.Unavailable=false
+            bound.ConfirmedKills+=1
+            api.Kills+=1 state.SecretRoomKills=api.Kills
+            -- Keep the tombstone through this room session so duplicate events and
+            -- removal cannot count the same death again.
+            for _,connection in row.Connections do connection:Disconnect() end
+            if bound.ConfirmedKills==bound.TrackedCount and not bound.TrackingOverflow then
+                bound.WavesCleared=bound.WavesStarted bound.WaveEndedAt=os.clock()
+                state.SecretRoomWavesCleared=bound.WavesCleared
+            end
+        else
+            -- Missing/streamed-out models are unresolved, never inferred kills.
+            row.Unavailable=not api.IsTarget(row.Model)
+        end
+    end
+    local function trackMob(mob)
+        local bound=session
+        if not bound or not api.IsTarget(mob) then return end
+        bound.SawMobs=true
+        local existing=bound.Tracked[mob]
+        if existing then observeTracked(bound,existing) return end
+        if bound.TrackedCount>=16 then bound.TrackingOverflow=true return end
+        if bound.TrackedCount==0 then bound.WavesStarted=1
+        elseif bound.WavesCleared==bound.WavesStarted then
+            if os.clock()-(bound.WaveEndedAt or os.clock())>=2 then bound.WavesStarted+=1
+            else bound.WavesCleared=math.max(0,bound.WavesCleared-1)end
+        end
+        state.SecretRoomWave=bound.WavesStarted state.SecretRoomWavesCleared=bound.WavesCleared
+        local row={Model=mob,Dead=false,Unavailable=false,Connections={}}
+        bound.Tracked[mob]=row bound.TrackedCount+=1 api.Seen[mob]=true
+        local function observe()observeTracked(bound,row)end
+        row.Connections[1]=mob:GetAttributeChangedSignal("Health"):Connect(observe)
+        row.Connections[2]=mob:GetAttributeChangedSignal("IsDead"):Connect(observe)
+        row.Connections[3]=mob.AncestryChanged:Connect(observe)
+        row.Connections[4]=mob.Destroying:Connect(function()
+            if session~=bound or not api.Active or api.Token~=bound.Token then return end
+            observe()
+            if not row.Dead then row.Unavailable=true end
+        end)
+        -- Replication may have delivered the death while subscriptions were bound.
+        observe()
+    end
+    local function clearMotion()
+        state.SecretRoomMotionOwned=false
+        stopMovement()
+        pcall(combat.Release)
+        if autoSkills then autoSkills.Cancel() end
+    end
+    function api.Stop(reason)
+        local nextJob=api.NextJob api.NextJob=nil
+        if nextJob and nextJob.Thread and nextJob.Thread~=coroutine.running()then pcall(task.cancel,nextJob.Thread)end
+        state.SecretRoomTransitioning=false state.SecretRoomNextRoom=nil
+        releaseLock()
+        ownedLight,ownedLightCharacter=nil,nil
+        if api.LightDiagnostics then api.LightDiagnostics.LastCancelReason="Stopped" end
+        api.Token+=1 api.Active=false
+        if walker then walker.Cancel("Stopped") end
+        local retreat=api.RetreatJob api.RetreatJob=nil
+        if retreat then
+            if retreat.Thread and retreat.Thread~=coroutine.running() then pcall(task.cancel,retreat.Thread) end
+            if retreat.BlockOwned and player.Character==retreat.Character then pcall(native.blockUp) end
+            state.SecretRoomRetreating=false
+        end
+        local previous=session session=nil
+        if previous and previous.HealthConnection then previous.HealthConnection:Disconnect() end
+        disconnectTracked(previous)
+        if previous then api.LastCompletion=completionSnapshot(previous) end
+        if entryThread and entryThread~=coroutine.running() then pcall(task.cancel,entryThread) end
+        entryThread=nil
+        if hover then
+            local flying=hover.Snapshot().Active
+            if flying then land(previous) end
+            hover.Reset()
+        end
+        state.SecretRoomHovering=false
+        if previous and previous.PromptOwned and previous.Room.Prompt.Parent then
+            pcall(function()previous.Room.Prompt:InputHoldEnd()end)
+        end
+        if previous and previous.EntryPromptOwned and previous.EntryPromptOwned.Parent then
+            pcall(function()previous.EntryPromptOwned:InputHoldEnd()end)
+        end
+        if previous and previous.PromptKeyRelease then pcall(previous.PromptKeyRelease)end
+        if previous and previous.PromptAimRelease then pcall(previous.PromptAimRelease)end
+        if defense then defense.Reset() end
+        clearMotion()
+        state.SecretRoomRemaining=0
+        api.Phase="Idle"
+        if reason then status(reason) end
+    end
+    local function stop(reason,retreat)
+        local previous=session
+        state.SetEnabled(false)
+        if retreat and previous and not previous.OriginInside and walker and player.Character==previous.Character then
+            local c,h,root=character()
+            if c==previous.Character and h and h.Health>0 then
+                local report={StartedAt=os.clock(),HealthBefore=h.Health,Arrived=false,Method="Walk"}
+                api.LastRetreat=report
+                local job={Character=c,BlockOwned=false}
+                api.RetreatJob=job state.SecretRoomRetreating=true
+                status("เลือดต่ำ • กำลังเดินถอยไปจุดพัก")
+                job.Thread=task.spawn(function()
+                    local set=setthreadidentity or setidentity if set then set(2) end
+                    local ok,arrived,problem=pcall(walker.WalkTo,previous.Origin.Position)
+                    if api.RetreatJob~=job then return end
+                    report.SameCharacter=player.Character==c report.HealthAfter=h.Health
+                    report.Arrived=ok and arrived==true and report.SameCharacter and h.Health>0
+                    report.Reason=ok and problem or tostring(arrived)
+                    report.Destination=tostring(previous.Origin.Position)
+                    api.RetreatJob=nil state.SecretRoomRetreating=false
+                    if state.Alive and not state.Enabled and state.Mode=="SecretRoom" then
+                        status(report.Arrived and "เลือดต่ำ • เดินกลับจุดพักแล้ว" or "เลือดต่ำ • เดินถอยไม่สำเร็จ กรุณาขยับตัวละคร")
+                    end
+                end)
+                return
+            end
+        end
+        status(reason)
+    end
+    function api.Check()
+        if not api.Active or not session then return false end
+        local c,h,root=character()
+        if not state.Alive or not state.Enabled or state.Mode~="SecretRoom" then api.Stop() return false end
+        if c~=session.Character or not h or h.Health<=0 then
+            api.CharacterLost()return false
+        end
+        local dungeon=workspace:FindFirstChild("Dungeon")
+        if not dungeon or not session.Room.Zone:IsDescendantOf(session.Room.Model)
+            or not session.Room.Main:IsDescendantOf(session.Room.Model)
+            or not session.Room.Prompt:IsDescendantOf(session.Room.Model)
+            or not session.Room.Model:IsDescendantOf(dungeon) then
+            stop("ห้องเปลี่ยนหรือโหลดออก • หยุดแล้ว") return false
+        end
+        if state.SecretRoomAutoRetreat and h.Health/h.MaxHealth<=retreatHealthRatio then
+            stop("เลือดเหลือ 30% หรือน้อยกว่า • ถอยและหยุดห้องลับแล้ว",true) return false
+        end
+        if api.Phase~="Entering" and not playerInside(root.Position) then
+            if state.SecretRoomLoopEnabled then finishRoom("ออกจากห้อง • รอไปห้องถัดไป","Incomplete")
+            else stop("ออกจากห้อง • หยุดไล่มอนแล้ว")end
+            return false
+        end
+        return true
+    end
+    local function away(mob)
+        local flying=hover and hover.Snapshot().Active
+        local c,h,root=character()
+        local part=mobRoot(mob)
+        if not c or not part or not session then return false end
+        local delta=root.Position-part.Position delta=Vector3.new(delta.X,0,delta.Z)
+        if delta.Magnitude<0.1 then delta=-root.CFrame.LookVector end
+        local base=delta.Unit
+        local right=Vector3.new(-base.Z,0,base.X)
+        local params=RaycastParams.new()
+        params.RespectCanCollide=true params.FilterType=Enum.RaycastFilterType.Exclude
+        params.FilterDescendantsInstances={c,workspace.Mobs}
+        if flying then
+            -- Airborne native dash needs a horizontal corridor; its floor can be
+            -- farther than the ground-mode nine-stud probe. Never change height here.
+            local room=session.Room
+            if not session.FloorY or not session.CeilingY or not room.Zone:IsDescendantOf(room.Model)
+                or root.Position.Y<session.FloorY+3.2 or root.Position.Y>session.CeilingY-3 then return false end
+            local half=room.Zone.Size/2
+            local function within(point)
+                local p=room.Zone.CFrame:PointToObjectSpace(point)
+                return math.abs(p.X)<=math.max(0,half.X-1.5)
+                    and math.abs(p.Z)<=math.max(0,half.Z-1.5)
+                    and point.Y>=session.FloorY+3.2 and point.Y<=session.CeilingY-3
+            end
+            -- In a small room an outward dash can hit a wall. A validated diagonal
+            -- across the room is preferable to forcing a blocked outward direction.
+            for _,dir in {base,(base+right).Unit,(base-right).Unit,right,-right,
+                -base,(-base+right).Unit,(-base-right).Unit} do
+                local endpoint=root.Position+dir*17.5
+                local clear=within(endpoint)
+                local side=Vector3.new(-dir.Z,0,dir.X)*1.2
+                if clear then
+                    for _,offset in {Vector3.zero,side,-side,Vector3.new(0,2,0)} do
+                        if workspace:Raycast(root.Position+offset,dir*17.5,params) then clear=false break end
+                    end
+                end
+                if clear then
+                    local depth=root.Position.Y-session.FloorY+5
+                    for sample=0,4 do
+                        local point=root.Position+dir*(17.5*sample/4)
+                        local floor=workspace:Raycast(point+Vector3.new(0,0.5,0),Vector3.new(0,-depth,0),params)
+                        if not floor or floor.Normal.Y<0.6 or math.abs(floor.Position.Y-session.FloorY)>3 then
+                            clear=false break
+                        end
+                    end
+                end
+                if clear then moveGoal=nil h:Move(dir,false) return true end
+            end
+            return false
+        end
+        for _,dir in {base,(base+right).Unit,(base-right).Unit,right,-right} do
+            local endpoint=root.Position+dir*17.5
+            local ground=workspace:Raycast(endpoint+Vector3.new(0,1,0),Vector3.new(0,-9,0),params)
+            local middle=workspace:Raycast(root.Position+dir*8+Vector3.new(0,1,0),Vector3.new(0,-9,0),params)
+            if inside(session.Room,endpoint,0) and ground and middle and ground.Normal.Y>0.6
+                and math.abs(ground.Position.Y-middle.Position.Y)<3
+                and not workspace:Raycast(root.Position,dir*17.5,params) then
+                moveGoal=nil h:Move(dir,false) return true
+            end
+        end
+        return false
+    end
+    local function nativeCall(fn,...)
+        local set=setthreadidentity or setidentity
+        local get=getthreadidentity or getidentity
+        local identity=get and get()
+        if set then set(2) end
+        local result=table.pack(pcall(fn,...))
+        if set and identity then set(identity) end
+        if not result[1] then error(result[2]) end
+        return table.unpack(result,2,result.n)
+    end
+    local function executorCall(fn,...)
+        local set=setthreadidentity or setidentity local get=getthreadidentity or getidentity
+        local identity=get and get()if set then set(8)end
+        local result=table.pack(pcall(fn,...))
+        if set and identity then set(identity)end
+        if not result[1]then error(result[2])end
+        return table.unpack(result,2,result.n)
+    end
+    local nativeLock,ownedLock,lastLockAttempt=nil,nil,-100
+    local function lockApi()
+        if nativeLock then return nativeLock end
+        local module=player.PlayerScripts.Client.Systems.LockOn
+        if not module then return nil end
+        local ok,value=pcall(require,module)
+        if ok and type(value)=="table" and type(value.getTarget)=="function"
+            and type(value.toggle)=="function" and type(value.release)=="function"then nativeLock=value end
+        return nativeLock
+    end
+    releaseLock=function()
+        local lock=lockApi()
+        if lock and ownedLock then
+            local ok,target=pcall(lock.getTarget)
+            if ok and target==ownedLock then pcall(nativeCall,lock.release)end
+        end
+        ownedLock=nil state.SecretRoomLocked=false
+    end
+    function api.LockTarget()
+        local lock=lockApi()if not lock then return nil end
+        local ok,target=pcall(lock.getTarget)
+        return ok and api.IsTarget(target)and target or nil
+    end
+    function api.SyncLock(target)
+        local lock=lockApi()if not lock or not api.IsTarget(target)then return nil end
+        local ok,existing=pcall(lock.getTarget)
+        if ok and api.IsTarget(existing)then state.SecretRoomLocked=true return existing end
+        if autoSkills and autoSkills.Busy()or os.clock()-lastLockAttempt<.75 then return nil end
+        lastLockAttempt=os.clock()
+        if existing then pcall(nativeCall,lock.release)end
+        local _,_,root=character()local part=mobRoot(target)
+        if not root or not part then return nil end
+        local camera=workspace.CurrentCamera
+        local saved,aimed
+        if camera then
+            saved=camera.CFrame aimed=CFrame.lookAt(saved.Position,part.Position)
+            camera.CFrame=aimed
+        end
+        pcall(nativeCall,lock.toggle)
+        local read,locked=pcall(lock.getTarget)
+        if camera and workspace.CurrentCamera==camera and camera.CFrame==aimed then camera.CFrame=saved end
+        if read and api.IsTarget(locked)then
+            ownedLock=locked state.SecretRoomLocked=true return locked
+        end
+        if read and locked then pcall(nativeCall,lock.release)end
+        state.SecretRoomLocked=false return nil
+    end
+    -- BEGIN OWNED LIGHT READER: inspect only the current native Combat closure.
+    api.LightDiagnostics={Starts=0,NewLight=0,ReaderUnavailable=0,BeforeKind="Idle",AfterKind="Idle",LastCancelReason="None"}
+    local lightReader,lightReaderCheckedAt=nil,-100
+    local function readNativeLight()
+        local getValues=getupvalues or type(debug)=="table" and debug.getupvalues
+        if type(getValues)~="function" or type(filtergc)~="function" or type(getfenv)~="function" then
+            return nil,false
+        end
+        local expected=player.PlayerScripts.Client.Systems.Combat
+        if not lightReader then
+            if os.clock()-lightReaderCheckedAt<1 then return nil,false end
+            lightReaderCheckedAt=os.clock()
+            local ok,matches=pcall(filtergc,"function",{Name="lightAttack"},false)
+            if not ok or type(matches)~="table" then return nil,false end
+            local examined=0
+            for _,fn in matches do
+                examined+=1 if examined>16 then break end
+                if type(fn)=="function" then
+                    local scopeOk,scope=pcall(getfenv,fn)
+                    if scopeOk and type(scope)=="table" and scope.script==expected then lightReader=fn break end
+                end
+            end
+        end
+        if not lightReader then return nil,false end
+        local scopeOk,scope=pcall(getfenv,lightReader)
+        if not scopeOk or type(scope)~="table" or scope.script~=expected then lightReader=nil return nil,false end
+        local ok,values=pcall(getValues,lightReader)
+        if not ok or type(values)~="table" then return nil,false end
+        local found
+        for index=1,16 do
+            local value=values[index]
+            if type(value)=="table" then
+                local kind=rawget(value,"kind")
+                if kind=="Light" or kind=="Heavy" or kind=="Block" or kind=="Dash" then
+                    if found then return nil,false end -- Ambiguous runtime shape: never cancel it.
+                    found=value
+                end
+            end
+        end
+        return found,true
+    end
+    function api.Attack()
+        if not current(api.Token) or not api.IsTarget(state.Target) then return false end
+        local before,beforeKnown=readNativeLight()
+        local diagnostics=api.LightDiagnostics
+        diagnostics.Starts+=1
+        diagnostics.BeforeKind=beforeKnown and (before and before.kind or "Idle") or "Unknown"
+        if beforeKnown and before and before.kind=="Light" and ownedLight and ownedLightCharacter==player.Character then
+            diagnostics.AfterKind="Light" return true
+        end
+        local attackOk,attackError=pcall(nativeCall,combat.Attack)
+        local after,afterKnown=readNativeLight()
+        diagnostics.AfterKind=afterKnown and (after and after.kind or "Idle") or "Unknown"
+        if not beforeKnown or not afterKnown then diagnostics.ReaderUnavailable+=1 end
+        if beforeKnown and afterKnown and after and after.kind=="Light" and after~=before
+            and type(after.cancel)=="function" then
+            ownedLight,ownedLightCharacter=after,player.Character
+            diagnostics.NewLight+=1
+        elseif not beforeKnown or not afterKnown or after~=ownedLight then
+            ownedLight,ownedLightCharacter=nil,nil
+        end
+        -- Keep the native combo held only after proving this session created the swing.
+        if not attackOk or not ownedLight then
+            local released,releaseError=pcall(nativeCall,combat.Release)
+            if not released then error(releaseError)end
+        end
+        if not attackOk then error(attackError) end
+        return ownedLight~=nil
+    end
+    function api.CancelOwnedLight()
+        local action,known=readNativeLight()
+        local own=ownedLight
+        local owner=ownedLightCharacter
+        ownedLight,ownedLightCharacter=nil,nil
+        local diagnostics=api.LightDiagnostics
+        if not known then
+            diagnostics.ReaderUnavailable+=1 diagnostics.LastCancelReason="ReaderUnavailable"
+            return false
+        end
+        if not own then diagnostics.LastCancelReason="Unowned" return false end
+        if owner~=player.Character then diagnostics.LastCancelReason="CharacterChanged" return false end
+        if action~=own then diagnostics.LastCancelReason="Replaced" return false end
+        if known and own and action==own and action.kind=="Light"
+            and owner==player.Character and type(action.cancel)=="function" then
+            nativeCall(combat.Release)
+            local ok,problem=pcall(nativeCall,action.cancel)
+            if not ok then diagnostics.LastCancelReason="CancelFailed" error(problem) end
+            diagnostics.LastCancelReason="Cancelled"
+            api.OwnedLightCancels=(api.OwnedLightCancels or 0)+1
+            return true
+        end
+        diagnostics.LastCancelReason="NotLight"
+        return false
+    end
+    -- END OWNED LIGHT READER
+    defense=state.CreateSecretRoomDefense({
+        AttackDuringWindup=true,PrepareLead=0.08,ExpiryGrace=0.2,
+        Ready=function()
+            local c,h,root=character()
+            return api.Active and session~=nil and state.Enabled and state.Alive
+                and state.Mode=="SecretRoom" and c==session.Character and h and h.Health>0
+                and root~=nil and playerInside(root.Position)
+        end,
+        IsTarget=api.IsTarget,
+        Distance=function(mob)local _,_,root=character() local p=mobRoot(mob)
+            return root and p and (root.Position-p.Position).Magnitude or math.huge end,
+        MoveAway=away,
+        DashCooldown=function()return native.dashCooldownLeft()end,
+        Stamina=function()local c=player.Character return c and c:GetAttribute("Stamina") or 0 end,
+        DashActive=function()local _,_,root=character()return root and root:FindFirstChild("DashVelocity")~=nil end,
+        Dash=function()
+            local _,_,root=character() if not root then return false end
+            pcall(function()setSprint(false)end)
+            nativeCall(native.dash) return root:FindFirstChild("DashVelocity")~=nil
+        end,
+        Prepare=function()
+            if autoSkills and autoSkills.Busy()then return false end
+            pcall(combat.Release)
+            api.CancelOwnedLight()
+            return not autoSkills or not autoSkills.Busy()
+        end,
+        HoldBlock=function(on)
+            if on then
+                if native.isBlocking() then return false end
+                nativeCall(native.blockDown) return native.isBlocking()
+            end
+            nativeCall(native.blockUp) return not native.isBlocking()
+        end,
+        StopMove=function()local _,h=character() if h then h:Move(Vector3.zero,false) end end,
+    })
+    local function hoverTarget()
+        if api.IsTarget(state.Target) then return state.Target end
+        local folder=workspace:FindFirstChild("Mobs")
+        if folder then for _,mob in folder:GetChildren() do if api.IsTarget(mob) then return mob end end end
+    end
+    hover=state.CreateSecretRoomHover({
+        MinHeight=4,MaxHeight=14,
+        Orbit=true,OrbitRadius=5.5,OrbitSpeed=1.2,
+        Style=function()return state.SecretRoomUnderground and "Underground" or "Orbit" end,
+        Goal=function(target)
+            if not state.SecretRoomUnderground then return nil end
+            if not session or not session.FloorY then error("UndergroundFloorUnverified") end
+            return Vector3.new(target.Position.X+(target.Anchor and 0 or 3),
+                session.FloorY-state.SecretRoomUndergroundDepth,target.Position.Z)
+        end,
+        Ready=function()
+            local c,h,root=character()
+            return api.Active and session~=nil and state.Enabled and state.Alive and state.Mode=="SecretRoom"
+                and c==session.Character and h and h.Health>0 and root~=nil and playerInside(root.Position)
+        end,
+        Enabled=function()return state.SecretRoomHover==true end,
+        Height=function()
+            return state.SecretRoomHoverHeight+(state.SecretRoomMotionOwned and 4 or 0)
+        end,
+        Character=character,
+        Target=function()
+            local target=hoverTarget() local part=mobRoot(target)
+            if part then return {Position=part.Position,Id=target,Valid=true} end
+            if state.SecretRoomUnderground and session and session.UnderAnchor then
+                return {Position=session.UnderAnchor,Id=session.Room.Zone,Valid=true,Anchor=true}
+            end
+        end,
+        ClampGoal=function(goal)
+            if not session or not session.FloorY or not session.CeilingY then return nil end
+            local room=session.Room
+            local localPoint=room.Zone.CFrame:PointToObjectSpace(goal)
+            local half=room.Zone.Size/2
+            localPoint=Vector3.new(math.clamp(localPoint.X,-half.X+0.5,half.X-0.5),localPoint.Y,
+                math.clamp(localPoint.Z,-half.Z+0.5,half.Z-0.5))
+            local point=room.Zone.CFrame:PointToWorldSpace(localPoint)
+            if state.SecretRoomUnderground then
+                return Vector3.new(point.X,session.FloorY-state.SecretRoomUndergroundDepth,point.Z)
+            end
+            return Vector3.new(point.X,math.clamp(point.Y,session.FloorY+3.2,session.CeilingY-4),point.Z)
+        end,
+        Move=function(root,goal,targetPosition)
+            local _,h=character()
+            local delta=targetPosition-goal delta=Vector3.new(delta.X,0,delta.Z)
+            if delta.Magnitude<0.1 then delta=Vector3.new(0,0,-1) end
+            moveGoal=nil h:Move(Vector3.zero,false)
+            root.CFrame=CFrame.lookAt(goal,goal+delta.Unit) root.AssemblyLinearVelocity=Vector3.zero
+        end,
+        GetParts=function(c)return c:QueryDescendants("BasePart")end,
+        GetCollide=function(part)return part.CanCollide end,
+        SetCollide=function(part,on)part.CanCollide=on end,
+        BeforeReset=function()
+            if state.SecretRoomUnderground and session then land(session) end
+        end,
+    })
+    function api.HoverStep()
+        local c,h,root=character()
+        -- Entry/retreat walking and native skills own their movement completely.
+        if api.Phase=="Entering" or api.RetreatJob or autoSkills and autoSkills.Busy() then return true end
+        if current(api.Token) and h and h.Health>0 and root and root:FindFirstChild("DashVelocity") then
+            -- Preserve the native dash's horizontal travel while holding altitude.
+            -- Letting gravity run for the whole dash dropped into the next attack.
+            local snapshot=hover.Snapshot()
+            if snapshot.Active and snapshot.Goal and session and session.CeilingY then
+                local point=root.Position
+                local altitude=state.SecretRoomUnderground and session.FloorY-state.SecretRoomUndergroundDepth
+                    or math.clamp(snapshot.Goal.Y,session.FloorY+3.2,session.CeilingY-4)
+                root.CFrame=CFrame.new(point.X,altitude,point.Z)*root.CFrame.Rotation
+                local velocity=root.AssemblyLinearVelocity
+                root.AssemblyLinearVelocity=Vector3.new(velocity.X,0,velocity.Z)
+            end
+            state.SecretRoomHovering=snapshot.Active
+            return true
+        end
+        local flying=hover.Snapshot().Active
+        local owned=hover.Step()
+        state.SecretRoomHovering=owned
+        if flying and not owned then land(session) end
+        return owned
+    end
+    function state.SetSecretRoomHover(enabled)
+        if state.Enabled or state.SecretRoomRetreating then return false end
+        if enabled==true then status("ห้องลับใช้เดินบนพื้นและสกิลก่อน")return false end
+        state.SecretRoomHover=enabled==true
+        if not state.SecretRoomHover then hover.Reset() end
+        pcall(continuity.Save,state,true) queueStatus() return true
+    end
+    function state.SetSecretRoomUnderground(enabled,depth)
+        if state.Enabled or state.SecretRoomRetreating then return false end
+        if enabled==true then status("ปิดโหมดมุดดิน • ใช้เดินบนพื้นและสกิล")return false end
+        if depth~=nil and (type(depth)~="number" or depth~=depth or math.abs(depth)==math.huge) then return false end
+        state.SecretRoomUnderground=enabled==true
+        state.SecretRoomUndergroundDepth=math.clamp(tonumber(depth) or 2.5,1,3)
+        if state.SecretRoomUnderground then state.SecretRoomHover=true end
+        queueStatus() return true
+    end
+    function state.SetSecretRoomHoverHeight(value)
+        if state.Enabled or state.SecretRoomRetreating or type(value)~="number" or value~=value then return false end
+        state.SecretRoomHoverHeight=math.clamp(math.floor(value),4,10)
+        pcall(continuity.Save,state,true) queueStatus() return true
+    end
+    local lastDefenseSnapshot=-100
+    local function undergroundOwned()
+        local c,h,root=character()
+        return state.SecretRoomUnderground and current(api.Token) and session.FloorY and hover.Snapshot().Active
+            and c==session.Character and h and h.Health>0 and root
+            and root.Position.Y<session.FloorY-0.5
+    end
+    function api.Defend()
+        if autoSkills and autoSkills.Busy() then
+            state.SecretRoomMotionOwned=false return false
+        end
+        if undergroundOwned() then
+            defense.Reset("Underground") state.SecretRoomMotionOwned=false return false
+        end
+        if api.Defending then return state.SecretRoomMotionOwned==true end
+        api.Defending=true
+        local ok,owned=pcall(defense.Step)
+        api.Defending=false
+        if not ok then state.SecretRoomError=tostring(owned) stop("ระบบหลบขัดข้อง • หยุดแล้ว") return true end
+        state.SecretRoomMotionOwned=owned
+        if os.clock()-lastDefenseSnapshot>=0.2 then
+            lastDefenseSnapshot=os.clock()
+            local snap=defense.Snapshot()
+            api.Dodges=snap.Dashes or 0 state.SecretRoomDodges=api.Dodges
+        end
+        return owned
+    end
+    local remotes=game:GetService("ReplicatedStorage"):FindFirstChild("Remotes")
+    local effect=remotes and remotes:FindFirstChild("PlayEffect")
+    if effect then connect(effect.OnClientEvent,function(name,payload)
+        if name=="MobTelegraph" and type(payload)=="table" and api.Active and not undergroundOwned() then
+            if defense.OnTelegraph(payload.model,payload.windup) then api.LastTelegraphAt=os.clock() end
+        end
+    end) end
+    if state.CreateSecretRoomSkillWindow then
+        skillWindow=state.CreateSecretRoomSkillWindow({
+            Ready=function()return api.Active and session~=nil and state.Enabled and not state.SecretRoomHover end,
+            NativeBusy=function()return autoSkills and autoSkills.Busy()==true or false end,
+            PendingDefense=function()return defense.Snapshot()end,
+        })
+    end
+    function api.CanSkill(row)
+        if not api.Active or state.SecretRoomHover then return false end
+        if skillWindow then return skillWindow.CanStart(row) end
+        return os.clock()-(api.LastTelegraphAt or -100)>0.8 and defense.Snapshot().Pending==0
+    end
+    if state.CreateSecretRoomWalk then
+        walker=state.CreateSecretRoomWalk({
+            Character=character,
+            PartialLegDistance=400,
+            Ready=function()
+                local job=api.RetreatJob
+                if job then return state.Alive and state.Mode=="SecretRoom" and not state.Enabled and player.Character==job.Character end
+                return current(api.Token)
+            end,
+            Path=function(start,goal)
+                local c,h,root=character() if not c then return nil,"CharacterMissing" end
+                local params=RaycastParams.new()
+                params.FilterType=Enum.RaycastFilterType.Exclude params.RespectCanCollide=true
+                params.FilterDescendantsInstances={c,workspace.Mobs,session and session.Room.Chest}
+                local hit=workspace:Raycast(goal+Vector3.new(0,4,0),Vector3.new(0,-14,0),params)
+                if not hit or hit.Normal.Y<.6 then return nil,"FloorMissing" end
+                goal=hit.Position+Vector3.new(0,h.HipHeight+root.Size.Y/2+.1,0)
+                local path=Pathfinding:CreatePath({AgentRadius=2,AgentHeight=5,AgentCanJump=true,WaypointSpacing=5})
+                local ok,problem=pcall(path.ComputeAsync,path,start,goal)
+                local points=ok and path.Status==Enum.PathStatus.Success and path:GetWaypoints()or nil
+                path:Destroy()
+                if points and #points>0 then
+                    local last=points[#points].Position
+                    local delta=goal-last
+                    if Vector3.new(delta.X,0,delta.Z).Magnitude>6 or math.abs(delta.Y)>8 then return nil,"PathEndTooFar"end
+                    local from=last+Vector3.new(0,h.HipHeight+root.Size.Y/2,0)
+                    if workspace:Raycast(from,goal-from,params)then return nil,"GoalObstructed"end
+                    points[#points+1]={Position=goal,Action=Enum.PathWaypointAction.Walk}
+                end
+                return points,points and nil or tostring(problem or "NoPath")
+            end,
+            ProjectLeg=function(start,goal)
+                local c,h,root=character() if not c then return nil end
+                local outdoors=(session and root.Position.Y>session.Room.Zone.Position.Y+200)
+                    or api.RetreatJob and root.Position.Y>1700
+                if not outdoors then return goal end
+                -- A native town warp can arrive before the next terrain section streams in.
+                pcall(function()player:RequestStreamAroundAsync(goal,3)end)
+                local params=RaycastParams.new()
+                params.FilterType=Enum.RaycastFilterType.Exclude params.RespectCanCollide=true
+                params.FilterDescendantsInstances={c,workspace.Mobs}
+                local hit,deadline=nil,os.clock()+4
+                repeat
+                    hit=workspace:Raycast(Vector3.new(goal.X,math.max(start.Y,goal.Y)+300,goal.Z),Vector3.new(0,-700,0),params)
+                    if hit and hit.Normal.Y>=.6 then break end
+                    task.wait(.1)
+                until os.clock()>=deadline or player.Character~=c or not state.Alive
+                if player.Character~=c or not state.Alive or not hit or hit.Normal.Y<.6 then return nil end
+                return hit.Position+Vector3.new(0,h.HipHeight+root.Size.Y/2+.1,0)
+            end,
+            MoveTo=function(point)
+                local _,h=character() if not h then return end
+                moveGoal=nil state.SecretRoomWalkGoal=point h.AutoRotate=true
+                if controls and controls.controlsEnabled~=false then pcall(function()controls:Disable()controlsChanged=true end)end
+                h:MoveTo(point) pcall(function()setSprint(true)end)
+            end,
+            Jump=function()local _,h=character()if h then h.Jump=true end end,
+            StopMove=function()
+                local _,h=character() moveGoal=nil state.SecretRoomWalkGoal=nil
+                if motionController then motionController.Release()end
+                if h then h:Move(Vector3.zero,false)end pcall(function()setSprint(false)end)
+            end,
+            Status=function(message)status(api.RetreatJob and "เลือดต่ำ • กำลังเดินถอย" or "กำลังเดินเข้าห้องลับ")end,
+        })
+    end
+    local function roomHasMobs(room)
+        local folder=workspace:FindFirstChild("Mobs")if not folder then return false end
+        for _,mob in folder:GetChildren()do
+            local part=mobRoot(mob)local health=mob:GetAttribute("Health")
+            if part and mob:GetAttribute("MobKind")and mob:GetAttribute("StoryOwner")==nil
+                and type(health)=="number"and health>0 and not mob:GetAttribute("IsDead")and inside(room,part.Position,.5)then return true end
+        end
+        return false
+    end
+    function api.QueueNextRoom(fromId)
+        local job={FromId=fromId,Attempts=0,Token=api.Token}
+        api.NextJob=job state.SecretRoomTransitioning=true api.Phase="NextRoom"
+        local schedule
+        local function ready()
+            return api.NextJob==job and api.Token==job.Token and state.Alive and state.Enabled
+                and state.Mode=="SecretRoom"and state.SecretRoomLoopEnabled
+        end
+        schedule=function(delay)
+            job.Thread=task.delay(delay,function()
+                job.Thread=nil
+                if not ready()then return end
+                job.Attempts+=1
+                local c,h,root=character()
+                if not c or not h or not root or h.Health<=0 or state.Respawning then
+                    status("วนห้อง • รอเกิดใหม่")schedule(3)return
+                end
+                if type(combat.IsFocused)=="function"and combat.IsFocused()then
+                    status("วนห้อง • รอปิดหน้าต่างของเกม")schedule(3)return
+                end
+                local catalog=describe()local index=0
+                for i,row in catalog do if row.Id==fromId then index=i break end end
+                local chosen,chosenIndex
+                for offset=1,#catalog do
+                    local i=(index+offset-1)%#catalog+1 local row=catalog[i]
+                    if os.clock()>=(api.RetryAfter[row.Id]or 0)and(row.Prompt.Enabled or roomHasMobs(row))then
+                        chosen,chosenIndex=row,i break
+                    end
+                end
+                if not chosen then status("วนครบแล้ว • รอห้องพร้อมเปิดอีกครั้ง")schedule(8)return end
+                if index>0 and chosenIndex<=index then state.SecretRoomLoopCycles+=1 end
+                state.SecretRoomNextRoom=chosen.Name
+                state.SelectedSecretRoom=chosen.Id api.NextJob=nil state.SecretRoomTransitioning=false
+                status("กำลังไป"..chosen.Name.." • วนห้องอัตโนมัติ")
+                if not api.Start()and state.Enabled then api.QueueNextRoom(fromId)end
+            end)
+        end
+        schedule(2)
+    end
+    finishRoom=function(reason,outcome)
+        local fromId=session and session.Room.Id or state.SelectedSecretRoom
+        local keepGoing=state.Alive and state.Enabled and state.Mode=="SecretRoom"and state.SecretRoomLoopEnabled
+        if outcome=="Completed"then state.SecretRoomRoomsCleared+=1 end
+        if fromId then api.RetryAfter[fromId]=os.clock()+(outcome=="FailedOpen"and 30 or 10)end
+        api.LastRoomOutcome=outcome
+        api.Stop(reason)
+        if keepGoing then
+            api.QueueNextRoom(fromId)
+        else
+            state.SetEnabled(false)
+            status(reason)
+            if outcome=="Completed"then api.Phase="Completed"end
+        end
+    end
+    function api.CharacterLost()
+        if state.SecretRoomLoopEnabled and state.Enabled then finishRoom("วนห้อง • รอเกิดใหม่แล้วไปต่อ","Died")
+        else stop("ตัวละครเปลี่ยนหรือตาย • หยุดห้องลับแล้ว")end
+    end
+    function state.SetSecretRoomLoop(value)
+        if not state.Alive then return false end
+        state.SecretRoomLoopEnabled=value==true
+        if not state.SecretRoomLoopEnabled and api.NextJob then state.SetEnabled(false)end
+        continuity.Save(state,true)queueStatus()return true
+    end
+    function api.Start()
+        if state.SecretRoomRetreating then status("กำลังถอย • รอจุดปลอดภัยก่อนเริ่มใหม่") return false end
+        if currentFloor~=2 then status("ห้องลับนี้ใช้ในชั้น 2") return false end
+        if state.SecretRoomHover or state.SecretRoomUnderground then
+            status("ห้องลับรุ่นนี้ใช้เดินบนพื้น • ปิดลอยก่อนเริ่ม") return false
+        end
+        local c,h,root=character()
+        if not c or not h or h.Health<=0 then status("รอตัวละครเกิดใหม่")return false end
+        if state.SecretRoomAutoRetreat and h.Health/h.MaxHealth<.70 then status("รอเลือดอย่างน้อย 70%")return false end
+        rooms=describe()
+        local chosen,closest
+        for _,row in rooms do
+            if row.Id==state.SelectedSecretRoom then chosen=row break end
+            local distance=(row.Zone.Position-root.Position).Magnitude
+            if not closest or distance<closest.Distance then closest={Room=row,Distance=distance} end
+        end
+        chosen=chosen or (closest and closest.Room)
+        if not chosen then status("ยังไม่พบห้องลับ • รอแผนที่โหลด") return false end
+        api.Stop()
+        api.Active=true api.Phase="Entering" api.Seen={}
+        state.SelectedSecretRoom=chosen.Id
+        local token=api.Token
+        session={Room=chosen,Character=c,Origin=root.CFrame,OriginInside=inside(chosen,root.Position,3),
+            Token=token,Tracked={},TrackedCount=0,ConfirmedKills=0,WavesStarted=0,WavesCleared=0}
+        state.SecretRoomWave=0 state.SecretRoomWavesCleared=0
+        api.LastCompletion=nil api.LastOpen=nil state.SecretRoomCompleted=false
+        session.HealthConnection=h.HealthChanged:Connect(function(value)
+            if state.SecretRoomAutoRetreat and api.Active and api.Token==token and value>0 and value/h.MaxHealth<=retreatHealthRatio then
+                stop("เลือดเหลือ 30% หรือน้อยกว่า • ถอยและหยุดห้องลับแล้ว",true)
+            end
+        end)
+        status("กำลังโหลดพื้นที่"..chosen.Name)
+        entryThread=task.spawn(function()
+            local set=setthreadidentity or setidentity if set then set(2) end
+            local ok,err=xpcall(function()
+                -- Start is called before SetEnabled flips its public switch.
+                task.wait()
+                if not current(token) then return end
+                if not walker then stop("ระบบเดินยังไม่พร้อม • โหลดสคริปต์ใหม่")return end
+                local function walk(point)
+                    local arrived,problem=walker.WalkTo(point)
+                    if not current(token)then return false end
+                    if not arrived and api.Phase~="Entering" then return true end
+                    if not arrived then finishRoom("เดินไม่ถึงจุดเปิดกล่อง • ไปห้องถัดไป","Unavailable")return false end
+                    return true
+                end
+                -- The dungeon is reached only through the game's native portal.
+                if not state.SecretRoomInstantEntry and root.Position.Y>chosen.Zone.Position.Y+200 then
+                    local entrance=Vector3.new(471.021,2220.319,4016.117)
+                    local anchors=workspace:FindFirstChild("MapAnchors")
+                    local best,source,bestDistance,sourceDistance
+                    if anchors then for _,anchor in anchors:GetChildren()do
+                        if anchor:IsA("BasePart")and (anchor.Name=="Frosthaven"or anchor.Name=="Eirholm"or anchor.Name=="Skalvik")then
+                            local distance=(anchor.Position-entrance).Magnitude
+                            if not bestDistance or distance<bestDistance then best,bestDistance=anchor,distance end
+                        end
+                    end end
+                    for _,prompt in workspace:QueryDescendants("ProximityPrompt[$TeleportId]")do
+                        local part=prompt.Parent
+                        if prompt.Enabled and part:IsA("BasePart")and prompt:GetAttribute("TeleportId")~= (best and best.Name)then
+                            local distance=(part.Position-root.Position).Magnitude
+                            if distance<300 and (not sourceDistance or distance<sourceDistance)then source,sourceDistance=prompt,distance end
+                        end
+                    end
+                    if best and source and (root.Position-entrance).Magnitude>bestDistance+sourceDistance+600
+                        and (root.Position-best.Position).Magnitude>300 then
+                        if (root.Position-source.Parent.Position).Magnitude>source.MaxActivationDistance then
+                            local offset=root.Position-source.Parent.Position
+                            offset=Vector3.new(offset.X,0,offset.Z)
+                            if offset.Magnitude<0.1 then offset=Vector3.new(1,0,0)end
+                            local standOff=math.clamp(source.MaxActivationDistance-2,2,6)
+                            if not walk(source.Parent.Position+offset.Unit*standOff)then return end
+                        end
+                        if (root.Position-source.Parent.Position).Magnitude>source.MaxActivationDistance then stop("ยังไม่ถึงจุดวาร์ปเมือง")return end
+                        mining.WarpTown(best.Name)
+                        local untilAt=os.clock()+10
+                        repeat task.wait(.1)if not current(token)then return end
+                        until (root.Position-best.Position).Magnitude<200 or os.clock()>untilAt
+                        if (root.Position-best.Position).Magnitude>=200 then stop("วาร์ปเมืองไม่สำเร็จ • หยุดแล้ว")return end
+                        session.Origin=root.CFrame
+                    end
+                    pcall(function()player:RequestStreamAroundAsync(entrance,4)end)
+                    if not current(token)then return end
+                    local floor=workspace:FindFirstChild("Floor2")
+                    local building=floor and floor:FindFirstChild("Dungeon")
+                    local door=building and building:FindFirstChild("Entrance")
+                    local portal=door and door:IsA("BasePart")and door:FindFirstChildOfClass("ProximityPrompt")
+                    if not portal or not portal.Enabled or portal.ObjectText~="Floor 2 Labyrinth" then
+                        stop("ยังไม่พบประตูหอคอยที่ใช้ได้")return
+                    end
+                    local offset=root.Position-door.Position offset=Vector3.new(offset.X,0,offset.Z)
+                    if offset.Magnitude<.1 then offset=Vector3.new(1,0,0)end
+                    local approach=door.Position+offset.Unit*math.clamp(portal.MaxActivationDistance-4,2,6)
+                    if (root.Position-door.Position).Magnitude>portal.MaxActivationDistance-2 and not walk(approach)then return end
+                    if not current(token)then return end
+                    if (root.Position-door.Position).Magnitude>portal.MaxActivationDistance then stop("ยังไม่ถึงระยะประตูหอคอย")return end
+                    session.EntryPromptOwned=portal
+                    portal:InputHoldBegin()task.wait(portal.HoldDuration+.2)
+                    portal:InputHoldEnd()
+                    if not current(token)then return end
+                    session.EntryPromptOwned=nil
+                    local untilAt=os.clock()+10
+                    repeat task.wait(.1)if not current(token)then return end
+                    until math.abs(root.Position.Y-chosen.Zone.Position.Y)<150 or os.clock()>untilAt
+                    if math.abs(root.Position.Y-chosen.Zone.Position.Y)>=150 then stop("ประตูหอคอยยังไม่ตอบรับ")return end
+                    session.Origin=root.CFrame session.OriginInside=inside(chosen,root.Position,3)
+                end
+                local streamOk=pcall(function()player:RequestStreamAroundAsync(chosen.Zone.Position,4)end)
+                if not current(token) then return end
+                if not streamOk then finishRoom("โหลดพื้นที่ไม่สำเร็จ • รอห้องถัดไป","Unavailable")return end
+                local params=RaycastParams.new()
+                params.RespectCanCollide=true params.FilterType=Enum.RaycastFilterType.Exclude
+                params.FilterDescendantsInstances={c,workspace.Mobs,chosen.Chest}
+                local hit=workspace:Raycast(chosen.Zone.Position,Vector3.new(0,-30,0),params)
+                if not hit then finishRoom("ไม่พบพื้นห้อง • รอห้องถัดไป","Unavailable")return end
+                local pos=hit.Position+Vector3.new(0,h.HipHeight+root.Size.Y/2+0.1,0)
+                session.FloorY=hit.Position.Y
+                session.GroundPart=hit.Instance
+                session.GroundCFrame=hit.Instance:IsA("BasePart") and hit.Instance.CFrame or nil
+                session.LandingPoint=pos
+                session.UnderAnchor=pos
+                local roof=workspace:Raycast(chosen.Zone.Position,Vector3.new(0,50,0),params)
+                session.CeilingY=roof and roof.Position.Y
+                if state.SecretRoomHover and (not session.CeilingY or session.CeilingY-session.FloorY<10) then
+                    stop("ยังตรวจพื้นที่ลอยไม่ได้ • หยุดก่อนเปิดหีบ") return
+                end
+                -- Draw while still at the departure point, including rooms with existing enemies.
+                combat.Unsheathe()
+                local drawDeadline=os.clock()+6
+                while c:GetAttribute("Sheathed") and os.clock()<drawDeadline do
+                    task.wait(0.1) if not current(token) then return end
+                end
+                if c:GetAttribute("Sheathed") then stop("ยังชักอาวุธไม่สำเร็จ • หยุดก่อนเข้าห้อง") return end
+                if state.SecretRoomInstantEntry and api.Phase=="Entering"and (root.Position-pos).Magnitude>6 then
+                    root.CFrame=CFrame.new(pos)*root.CFrame.Rotation root.AssemblyLinearVelocity=Vector3.zero
+                    task.wait(.4)if not current(token)then return end
+                end
+                if not walk(pos)then return end
+                -- Existing enemies can attack as soon as the character arrives.
+                -- Allow the combat loop while the chest/room finishes loading.
+                api.Phase="Waiting" session.WaitSince=os.clock()
+                if not current(token) then return end
+                -- Do not activate the chest while already surviving an active room.
+                local count=0 for _,mob in workspace.Mobs:GetChildren() do if api.IsTarget(mob) then count+=1 end end
+                if count==0 then
+                    local dir=root.Position-chosen.Main.Position dir=Vector3.new(dir.X,0,dir.Z)
+                    if dir.Magnitude<0.1 then dir=Vector3.new(1,0,0) end
+                    local point=Vector3.new(chosen.Main.Position.X,pos.Y,chosen.Main.Position.Z)+dir.Unit*5.5
+                    if not inside(chosen,point,0) then stop("จุดเปิดหีบอยู่นอกห้อง • หยุดแล้ว") return end
+                    session.UnderAnchor=point
+                    api.Phase="Entering"
+                    if not walk(point)then return end
+                    api.Phase="Waiting"
+                    if not current(token) then return end
+                    for _,mob in workspace.Mobs:GetChildren() do
+                        if api.IsTarget(mob) then return end
+                    end
+                    -- Prompts can start disabled while the room is streaming or
+                    -- while the native chest's PromptShowDelay is running.
+                    local promptDeadline=os.clock()+math.clamp(tonumber(chosen.Chest:GetAttribute("PromptShowDelay")) or 5,0,10)+3
+                    api.Phase="Waiting" session.WaitSince=os.clock()
+                    while not chosen.Prompt.Enabled and os.clock()<promptDeadline do
+                        status("รอหีบพร้อมเปิด")
+                        task.wait(0.1) if not current(token) then return end
+                        local appeared=false
+                        for _,mob in workspace.Mobs:GetChildren() do if api.IsTarget(mob) then appeared=true break end end
+                        if appeared then return end
+                    end
+                    if not chosen.Prompt.Enabled then
+                        finishRoom("หีบยังไม่พร้อมเปิด • ไปห้องถัดไป","Unavailable")return
+                    end
+                    status("กำลังเปิดหีบ • สุ่มไอเท็มหรือมอน")
+                    local lid=chosen.Chest:FindFirstChild("Lid")
+                    local before=lid and lid:IsA("BasePart") and lid.CFrame
+                    api.Phase="Waiting" session.WaitSince=os.clock()session.Opening=true
+                    if (root.Position-chosen.Main.Position).Magnitude>chosen.Prompt.MaxActivationDistance then
+                        stop("ยังไม่ถึงระยะเปิดกล่อง")return
+                    end
+                    if combat.IsFocused()then finishRoom("ปิดหน้าต่างของเกมก่อนเปิดกล่อง","Paused")return end
+                    api.LastOpen={Method="HeldCameraKey",Accepted=false,Distance=(root.Position-chosen.Main.Position).Magnitude}
+                    local camera=workspace.CurrentCamera
+                    local run=game:GetService("RunService")
+                    local bindName="EvernightChestAim239_"..tostring(token)
+                    local function releaseAim()run:UnbindFromRenderStep(bindName)end
+                    local function aim()
+                        if not current(token)or not root.Parent or h.Health<=0 or workspace.CurrentCamera~=camera
+                            or not chosen.Prompt.Enabled or api.Phase=="Fighting"then releaseAim()return end
+                        local delta=root.Position-chosen.Main.Position delta=Vector3.new(delta.X,0,delta.Z)
+                        if delta.Magnitude<.1 then delta=Vector3.new(1,0,0)end
+                        camera.CFrame=CFrame.lookAt(root.Position+delta.Unit*6+Vector3.new(0,3,0),chosen.Main.Position)
+                    end
+                    if camera then
+                        session.PromptAimRelease=releaseAim
+                        run:BindToRenderStep(bindName,Enum.RenderPriority.Camera.Value+50,aim)
+                    end
+                    task.wait(.25)if not current(token)then return end
+                    local keyOk,keyError=pcall(function()
+                        local input=game:GetService("VirtualInputManager")local key=chosen.Prompt.KeyboardKeyCode
+                        session.PromptKeyRelease=function()executorCall(input.SendKeyEvent,input,false,key,false,game)end
+                        executorCall(input.SendKeyEvent,input,true,key,false,game)
+                        task.wait(chosen.Prompt.HoldDuration+.2)
+                    end)
+                    if not current(token)then return end
+                    if session.PromptKeyRelease then pcall(session.PromptKeyRelease)session.PromptKeyRelease=nil end
+                    if not keyOk then
+                        api.LastOpen.Method="PromptHold"api.LastOpen.KeyError=tostring(keyError)
+                        session.PromptOwned=true chosen.Prompt:InputHoldBegin()
+                        task.wait(chosen.Prompt.HoldDuration+.2)
+                        if not current(token)then return end
+                        chosen.Prompt:InputHoldEnd()session.PromptOwned=false
+                    end
+                    task.wait(0.35)
+                    if not current(token) then return end
+                    releaseAim()session.PromptAimRelease=nil
+                    session.Opening=false
+                    session.OpenAccepted=not chosen.Prompt.Enabled or (before and lid.Parent and lid.CFrame~=before)
+                    api.LastOpen.Accepted=session.OpenAccepted==true
+                    if session.OpenAccepted then
+                        api.OpenCount+=1 state.SecretRoomOpenCount=api.OpenCount api.Used[chosen.Id]=true
+                    else
+                        finishRoom("กล่องยังไม่ตอบรับ • รอไปห้องถัดไป","FailedOpen")return
+                    end
+                end
+                if current(token) then api.Phase="Waiting" session.WaitSince=os.clock()
+                    status("หีบสุ่มไอเท็มหรือมอน • รอผลในห้อง") end
+            end,debug.traceback)
+            entryThread=nil
+            if not ok and current(token) then state.SecretRoomError=tostring(err) stop("ห้องลับขัดข้อง • หยุดแล้ว") end
+        end)
+        return true
+    end
+    function api.Step()
+        if not api.Check() then return true end
+        local _,_,root=character()
+        if api.Phase=="Entering" then
+            if playerInside(root.Position)then
+                for _,mob in workspace.Mobs:GetChildren()do
+                    local part=mobRoot(mob)
+                    if api.IsTarget(mob)and part and (part.Position-root.Position).Magnitude<=14 then
+                        api.Phase="Waiting" session.WaitSince=os.clock()
+                        if walker then walker.Cancel("CombatReady")end
+                        break
+                    end
+                end
+            end
+            if api.Phase=="Entering"then return true end
+        end
+        local count,now,candidate=0,os.clock(),nil
+        for _,mob in workspace.Mobs:GetChildren() do
+            if api.IsTarget(mob) then
+                count+=1 trackMob(mob)
+                candidate=candidate or mob
+            end
+        end
+        for _,row in session.Tracked do observeTracked(session,row) end
+        state.SecretRoomRemaining=count
+        if count>0 then
+            session.SawMobs=true session.EmptySince=nil session.CompletionSince=nil api.Phase="Fighting"
+            local locked=api.SyncLock(api.IsTarget(state.Target)and state.Target or candidate)
+            if locked then state.Target=locked end
+            api.Defend()
+            if state.SecretRoomMotionOwned then
+                status("กำลังหลบการโจมตี • เหลือ "..count.." ตัว") return true
+            end
+            state.SecretRoomStatus="เวฟ "..session.WavesStarted.."/"..requiredWaves.." • เหลือ "..count.." ตัว"
+            return false
+        end
+        api.Defend()
+        if session.Opening then return true end
+        releaseLock() state.Target=nil
+        pcall(combat.Release) stopMovement()
+        session.EmptySince=session.EmptySince or now
+        local completion=completionSnapshot(session)
+        if completion.SawMobs and not completion.Overflow and completion.Tracked>0
+            and completion.ConfirmedKills==completion.Tracked and completion.Alive==0
+            and completion.UnknownRemoved==0 then
+            if completion.WavesCleared<requiredWaves then
+                api.Phase="WaitingWave"
+                status("จบเวฟ "..completion.WavesCleared.."/"..requiredWaves.." • รอเวฟถัดไป")
+                if now-session.EmptySince>=waveWaitLimit then finishRoom("รอเวฟนานเกินไป • ยังยืนยันผ่านไม่ได้","Incomplete")end
+            else
+                session.CompletionSince=session.CompletionSince or now
+                status("ครบ "..requiredWaves.." เวฟ • รอยืนยันห้องจบ")
+                if now-session.CompletionSince>=finalQuiet then
+                    session.Completed=true state.SecretRoomCompleted=true
+                    finishRoom("เคลียร์ครบ "..requiredWaves.." เวฟ • ยืนยันมอนตาย "..completion.ConfirmedKills.." ตัว","Completed")
+                end
+            end
+        else
+            session.CompletionSince=nil
+            status(completion.SawMobs and "มอนหายจากห้อง • ยังยืนยันเคลียร์ไม่ได้" or "ไม่พบมอน • หีบอาจสุ่มไอเท็ม")
+            if now-session.EmptySince>=18 then
+                finishRoom(completion.SawMobs and "มอนหายหรือข้อมูลไม่ครบ • ยังยืนยันเคลียร์ไม่ได้"
+                    or "เปิดกล่องแล้วไม่พบมอน • ไปห้องถัดไป",completion.SawMobs and "Incomplete"or "Loot")
+            end
+        end
+        return true
+    end
+    function api.Snapshot()
+        return {Active=api.Active,Phase=api.Phase,Room=session and session.Room.Id,
+            FloorY=session and session.FloorY,Underground=state.SecretRoomUnderground,
+            UndergroundDepth=state.SecretRoomUndergroundDepth,
+            OwnedLight=ownedLight~=nil,OwnedLightCancels=api.OwnedLightCancels or 0,
+            Light={Starts=api.LightDiagnostics.Starts,NewLight=api.LightDiagnostics.NewLight,
+                ReaderUnavailable=api.LightDiagnostics.ReaderUnavailable,BeforeKind=api.LightDiagnostics.BeforeKind,
+                AfterKind=api.LightDiagnostics.AfterKind,LastCancelReason=api.LightDiagnostics.LastCancelReason},
+            Kills=api.Kills,Dodges=api.Dodges,OpenCount=api.OpenCount,Defense=defense.Snapshot(),Retreat=api.LastRetreat,
+            Walking=walker and walker.Snapshot(),SkillWindow=skillWindow and skillWindow.Snapshot(),
+            Hover=hover.Snapshot(),Open=api.LastOpen,Completion=session and completionSnapshot(session)
+                or api.LastCompletion or completionSnapshot(nil),Locked=state.SecretRoomLocked==true,
+            Loop={Enabled=state.SecretRoomLoopEnabled,RoomsCleared=state.SecretRoomRoomsCleared,Cycles=state.SecretRoomLoopCycles,
+                Pending=api.NextJob~=nil,Attempts=api.NextJob and api.NextJob.Attempts or 0,LastOutcome=api.LastRoomOutcome}}
+    end
+    function api.Destroy()api.Stop() defense.Destroy() hover.Destroy()if walker then walker.Destroy()end end
+    state.GetSecretRooms=api.Rooms
+    state.SelectSecretRoom=api.Select
+    state.GetSecretRoomStatus=api.Snapshot
+    state.SecretRoomStatus="เลือกห้อง • หีบสุ่มไอเท็มหรือมอน"
+    state.SecretRoomKills,state.SecretRoomDodges,state.SecretRoomOpenCount=0,0,0
+    return api
+end
+
 -- Native floor travel and the World page. No transaction is automatically repeated.
 worldController = (function()
     local api={Highest=1,LastRead=-10}
@@ -7044,6 +9420,21 @@ worldController = (function()
         if not state.AutoResumeFarm then state.AutoResumePending=false end
         state.SaveSettings()
     end
+    function state.SelectLeastPlayersServer()
+        if state.Enabled or state.FloorTravelling or state.Travelling or state.Crafting or state.Selling then
+            state.ServerSelectionStatus="หยุดงานปัจจุบันก่อนเลือกเซิร์ฟเวอร์"
+            queueStatus() return false
+        end
+        state.ServerSelectionRecoveries=0
+        state.UseCurrentServer=true
+        state.SaveSettings()
+        return continuity.StartServerSelection(state)
+    end
+    function state.SetUseCurrentServer(value)
+        state.UseCurrentServer=value==true
+        if state.UseCurrentServer then continuity.StartServerSelection(state)end
+        state.SaveSettings()queueStatus()
+    end
     function state.ShowWorldPanel(open)
         state.ShowSettings(false)
         state.WorldOpen=open==true
@@ -7056,7 +9447,9 @@ worldController = (function()
     function state.GetWorldStatus()
         return {Floor=currentFloor,Highest=readHighest(),Travelling=state.FloorTravelling==true,
             Status=state.FloorTravelStatus,Persistence=continuity.Store.Status,Continuation=continuity.QueueStatus,
-            AutoJoinWorld=state.AutoJoinWorld,AutoResumeFarm=state.AutoResumeFarm}
+            AutoJoinWorld=state.AutoJoinWorld,AutoResumeFarm=state.AutoResumeFarm,
+            AlwaysLeastPlayers=state.UseCurrentServer~=true,UseCurrentServer=state.UseCurrentServer,ServerReady=state.ServerSelectionReady,
+            ServerStatus=state.ServerSelectionStatus,ServerTarget=state.ServerSelectionTarget}
     end
     function api.TravelFailed(message)
         if not state.FloorTravelling then return end
@@ -7074,6 +9467,7 @@ worldController = (function()
         elseif floor==currentFloor then reason="อยู่ชั้นนี้แล้ว"
         elseif floor>readHighest() then reason="ต้องปลดล็อกชั้นนี้ในเกมก่อน"
         elseif state.FloorTravelling then reason="กำลังย้ายชั้น กรุณารอสักครู่"
+        elseif state.ServerSelectionBusy then reason="กำลังเลือกเซิร์ฟเวอร์คนน้อย กรุณารอสักครู่"
         elseif state.Crafting or state.Selling or state.Travelling then reason="รอให้รายการหรือการเดินทางปัจจุบันจบก่อน"
         elseif state.RestoringEquipment then reason="กำลังคืนอุปกรณ์ กรุณารอสักครู่" end
         if reason then state.FloorTravelStatus=reason queueStatus() return false,reason end
@@ -7149,9 +9543,12 @@ worldController = (function()
             return b,c.Caption
         end
         local remember,rememberStatus=toggleCard("Persistence","จำการตั้งค่า","",32,function()state.SetPersistenceEnabled(not state.PersistenceEnabled)end)
-        local autoJoin=toggleCard("AutoJoinWorld","เข้าโลกอัตโนมัติ","เข้าโลกต่อเมื่ออยู่หน้าล็อบบี้",96,function()state.SetAutoJoinWorld(not state.AutoJoinWorld)end)
-        local autoResume=toggleCard("AutoResumeFarm","ฟาร์มต่อเมื่อเข้าใหม่","เฉพาะตีมอนและขุดแร่",160,function()state.SetAutoResumeFarm(not state.AutoResumeFarm)end)
+        local autoJoin=toggleCard("AutoJoinWorld","เข้าโลกอัตโนมัติ","เลือกเซิร์ฟคนน้อยก่อนเริ่มฟาร์มเสมอ",96,function()state.SetAutoJoinWorld(not state.AutoJoinWorld)end)
+        local autoResume=toggleCard("AutoResumeFarm","ฟาร์มต่อเมื่อเข้าใหม่","ตีมอน · ขุดแร่ · เควส · วนห้อง",160,function()state.SetAutoResumeFarm(not state.AutoResumeFarm)end)
         text("FloorCaption","เดินทางข้ามชั้น",0,222,280,18,frame,10,theme.Muted)
+        local retryServer=button("เช็กเซิร์ฟ",UDim2.fromOffset(82,20),UDim2.fromOffset(198,220),frame)
+        retryServer.Name,retryServer.TextSize="SelectLeastPlayersServer",10
+        connect(retryServer.Activated,state.SelectLeastPlayersServer)
         local floors={}
         for floor=1,2 do
             local b=button("ไปชั้น "..floor,UDim2.fromOffset(136,32),UDim2.fromOffset((floor-1)*144,244),frame)
@@ -7177,13 +9574,15 @@ worldController = (function()
             end
             rememberStatus.Text=continuity.Store.Status
             local highest=readHighest()
+            retryServer.Active=not state.ServerSelectionBusy and not state.FloorTravelling and not state.Enabled
             for floor,b in floors do
                 b.Text=floor==currentFloor and ("ชั้น "..floor.." • อยู่ที่นี่") or floor>highest and ("ชั้น "..floor.." • ยังล็อก") or "ไปชั้น "..floor
                 b.Active=floor~=currentFloor and floor<=highest and not state.FloorTravelling
                 b.BackgroundColor3=b.Active and theme.Selected or theme.Surface
                 b.TextColor3=b.Active and theme.Text or theme.Muted
             end
-            status.Text=state.FloorTravelStatus or continuity.QueueStatus
+            status.Text=state.FloorTravelling and state.FloorTravelStatus
+                or state.ServerSelectionStatus or state.FloorTravelStatus or continuity.QueueStatus
         end
     end
     return api
@@ -7697,6 +10096,25 @@ local function createGui()
         Make = make, Text = text, Card = card, Button = button, Connect = connect,
     }, theme)
     worldController.Mount(panel,nav,{Make=make,Text=text,Card=card,Button=button})
+    view.SecretRoomPage = state.CreateSecretRoomPage(state, {
+        Make=make, Text=text, Card=card, Button=button, Connect=connect, Theme=theme, Nav=nav,
+        PaintButton=function(object,active)view.PaintButton(object,active)end,
+        Hover=function(object,hovered)
+            if hovered then view.NavHovered=object elseif view.NavHovered==object then view.NavHovered=nil end
+        end,
+    })
+    view.SecretRoomPage.Mount(panel)
+    local secretRoomBaseChrome = view.UiChrome
+    view.UiChrome = function()
+        if secretRoomBaseChrome then secretRoomBaseChrome() end
+        local visible = state.Mode == "SecretRoom" and not state.WorldOpen and not state.SettingsOpen
+        view.SecretRoomPage.Show(visible)
+        if visible then
+            view.Main.Visible=false
+            if questBrowser.Frame then questBrowser.Frame.Visible=false end
+            panel.DragHandle.PageTitle.Text="ห้องลับในหอคอย"
+        end
+    end
     view.Fit()
     refreshChoices()
     updateStatus()
@@ -7704,6 +10122,7 @@ end
 
 
 local function chooseTarget(root)
+    if state.Mode=="SecretRoom" and state.SecretRoomController then local locked=state.SecretRoomController.LockTarget() if locked then return locked end end
     local folder = workspace:FindFirstChild(state.Mode == "Mining" and "OreNodes" or "Mobs")
     if not folder then return end
     local best, distance, bestPriority = nil, math.huge, math.huge
@@ -8586,6 +11005,7 @@ end
 
 local function step()
     state.StepStage = "begin"
+    if state.SecretRoomController and state.SecretRoomController.Active then state.SecretRoomController.Check() end
     stepFreeRespawn()
     if potionController then
         local potionOk,potionProblem = pcall(potionController.Step)
@@ -8618,6 +11038,7 @@ local function step()
         return
     end
     remember(c, h)
+    if state.Mode == "SecretRoom" and state.SecretRoomController.Step() then return end
     if autoSkills.Busy() then
         state.Status = "กำลังใช้สกิล " .. (state.LastSkill or "")
         return
@@ -8685,8 +11106,9 @@ local function step()
     local distance = rangeDelta.Magnitude
     local flatDistance = Vector3.new(rangeDelta.X,0,rangeDelta.Z).Magnitude
     state.Distance = distance
-    if not c:GetAttribute("Sheathed") and distance <= (largeNpc and 3.2 or state.Mode == "Quest" and 7.5 or 13) and not actionBusy() then
+    if not c:GetAttribute("Sheathed") and distance <= (state.Mode=="SecretRoom" and 6 or largeNpc and 3.2 or state.Mode == "Quest" and 7.5 or 13) and not actionBusy() then
         local row = autoSkills.Next()
+        if row and state.Mode=="SecretRoom" and not state.SecretRoomController.CanSkill(row) then row=nil end
         if row then
             if not engaged[target] then engaged[target] = {Lowest = target:GetAttribute("Health")} end
             pcall(combat.Release)
@@ -8716,7 +11138,7 @@ local function step()
             lastAttack = os.clock()
             if not engaged[target] then engaged[target] = {Lowest = target:GetAttribute("Health")} end
             state.Attacks += 1
-            runAction("attack", combat.Attack)
+            runAction("attack", function() if state.Mode == "SecretRoom" and state.SecretRoomController then state.SecretRoomController.Attack() else combat.Attack() end end)
         end
         lastProgress, lastPosition = os.clock(), root.Position
         return
@@ -8736,6 +11158,7 @@ freeRespawn = resolveFreeRespawn()
 serviceTravel = resolveServiceTravel()
 forgeQuest = currentFloor == 2 and resolveFloor2StoneQuest(resolveForgeQuest()) or resolveNpcStoneQuest(resolveForgeQuest())
 autoSkills = resolveAutoSkills()
+state.SecretRoomController = state.ResolveSecretRoom()
 autoPotion = resolveAutoPotion()
 potionController = createAutoPotionController(autoPotion, {
     State = state,
@@ -8759,6 +11182,7 @@ travelController = createServiceTravelController(serviceTravel, {
 respawnController = createFreeRespawnController(freeRespawn, {
     Enabled = state.AutoRespawn, Deaths = state.RespawnDeaths, Requests = state.RespawnRequests, Completed = state.Respawns,
     OnDeath = function()
+        if state.SecretRoomController and state.SecretRoomController.Active then state.SecretRoomController.CharacterLost() end
         if state.Travelling then state.CancelServiceTravel("ตายระหว่างเดิน • ยกเลิกรายการที่รอแล้ว") end
         cancelAction()
         stopMovement()
@@ -8837,6 +11261,7 @@ state.WebhookThread = task.spawn(function()
     end
 end)
 connect(player.CharacterAdded, function()
+    if state.SecretRoomController and state.SecretRoomController.Active then state.SecretRoomController.CharacterLost() end
     motionController.Release()
     if state.Travelling then state.CancelServiceTravel("เกิดตัวละครใหม่ • ยกเลิกรายการที่รอแล้ว") end
     cancelAction()
@@ -8892,6 +11317,7 @@ state.Ready=true
 state.AutoResumePending=continuity.Store.CanResume(previousSettings,state.Mode)
 state.ResumeController=createAutoResumeController(state,{
     Ready=function()
+        if state.ServerSelectionReady~=true then return false,state.ServerSelectionStatus end
         local c,h,root=character()
         if not c or not h or not root or h.Health<=0 or state.Respawning then return false end
         if state.RestoringEquipment then return false end
@@ -8909,6 +11335,7 @@ state.PersistenceThread=task.spawn(function()
         task.wait(0.5)
     end
 end)
+continuity.StartServerSelection(state)
 state.ResumeThread=task.spawn(function()
     while state.Alive and not state.ResumeController.Done do
         local result=state.ResumeController.Step()
