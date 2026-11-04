@@ -1,6 +1,5 @@
--- Evernight v2.50: self-contained installer and runner.
+-- Evernight v2.49: self-contained installer and runner.
 local source=[====[
-local evernightFactories = {}
 -- Persistent preferences and teleport continuation, confined to Project Eternity.
 local continuity = (function()
 -- Standalone constructor. No Roblox state or disk writes occur until an API method is called.
@@ -1115,7 +1114,7 @@ end
 continuity.Apply(previousSettings)
 local inheritedRestores = {}
 for _, old in filtergc("table", {Keys = {"Alive", "Enabled", "Selected", "SetEnabled", "Destroy"}}, false) do
-    if old.Version == "2.50" or old.Version == "2.49" or old.Version == "2.48" or old.Version == "2.47" or old.Version == "2.46" or old.Version == "2.45" or old.Version == "2.44" or old.Version == "2.43" or old.Version == "2.42" or old.Version == "2.41" or old.Version == "2.40" or old.Version == "2.39" or old.Version == "2.38" or old.Version == "2.37" or old.Version == "2.36" or old.Version == "2.35" or old.Version == "2.34" or old.Version == "2.33" or old.Version == "2.32" or old.Version == "2.31" or old.Version == "2.30" or old.Version == "2.29" or old.Version == "2.28" or old.Version == "2.27" or old.Version == "2.26" or old.Version == "2.25" or old.Version == "2.24" or old.Version == "2.23" or old.Version == "2.22" or old.Version == "2.21" or old.Version == "2.20" or old.Version == "2.19" or old.Version == "2.18" or old.Version == "2.17" or old.Version == "2.16" or old.Version == "1.0" or old.Version == "1.1" or old.Version == "1.2" or old.Version == "1.3" or old.Version == "1.4" or old.Version == "1.5" or old.Version == "1.6" or old.Version == "1.7" or old.Version == "1.8" or old.Version == "1.9" or old.Version == "2.0" or old.Version == "2.1" or old.Version == "2.2" or old.Version == "2.3" or old.Version == "2.4" or old.Version == "2.5" or old.Version == "2.6" or old.Version == "2.7" or old.Version == "2.8" or old.Version == "2.9" or old.Version == "2.10" or old.Version == "2.11" or old.Version == "2.12" or old.Version == "2.13" or old.Version == "2.14" or old.Version == "2.15" then
+    if old.Version == "2.49" or old.Version == "2.48" or old.Version == "2.47" or old.Version == "2.46" or old.Version == "2.45" or old.Version == "2.44" or old.Version == "2.43" or old.Version == "2.42" or old.Version == "2.41" or old.Version == "2.40" or old.Version == "2.39" or old.Version == "2.38" or old.Version == "2.37" or old.Version == "2.36" or old.Version == "2.35" or old.Version == "2.34" or old.Version == "2.33" or old.Version == "2.32" or old.Version == "2.31" or old.Version == "2.30" or old.Version == "2.29" or old.Version == "2.28" or old.Version == "2.27" or old.Version == "2.26" or old.Version == "2.25" or old.Version == "2.24" or old.Version == "2.23" or old.Version == "2.22" or old.Version == "2.21" or old.Version == "2.20" or old.Version == "2.19" or old.Version == "2.18" or old.Version == "2.17" or old.Version == "2.16" or old.Version == "1.0" or old.Version == "1.1" or old.Version == "1.2" or old.Version == "1.3" or old.Version == "1.4" or old.Version == "1.5" or old.Version == "1.6" or old.Version == "1.7" or old.Version == "1.8" or old.Version == "1.9" or old.Version == "2.0" or old.Version == "2.1" or old.Version == "2.2" or old.Version == "2.3" or old.Version == "2.4" or old.Version == "2.5" or old.Version == "2.6" or old.Version == "2.7" or old.Version == "2.8" or old.Version == "2.9" or old.Version == "2.10" or old.Version == "2.11" or old.Version == "2.12" or old.Version == "2.13" or old.Version == "2.14" or old.Version == "2.15" then
         old.Reloading=true
         if old.Enabled or old.AutoResumePending then old.FloorTravelResumeEnabled=true end
         local cleanup = task.spawn(function() pcall(old.Destroy) end)
@@ -1160,7 +1159,7 @@ local function normalizeFloor1QuestOrder(value)
 end
 
 -- Resume intent survives slow character loading; the caller owns the polling worker.
-function evernightFactories.createAutoResumeController(state, options)
+local function createAutoResumeController(state, options)
     options=options or {}
     local api={Done=false}
     local wanted=state.AutoResumePending==true
@@ -1202,7 +1201,7 @@ function evernightFactories.createAutoResumeController(state, options)
 end
 
 -- Reversible visual reductions. No frame loop, physics changes, or combat-effect hiding.
-function evernightFactories.createLowGraphicsController(state, options)
+local function createLowGraphicsController(state, options)
     options=options or {}
     local function service(name)
         local ok,value=pcall(function()return game:GetService(name)end)
@@ -1654,7 +1653,7 @@ local state = {
     AutoTownWarp = previousSettings.AutoTownWarp ~= false, Warps = 0,
     Status = "พร้อมใช้งาน", Target = nil, Distance = 0,
     Attacks = 0, Kills = 0, DamageObserved = 0, PathStatus = "idle", LastError = nil,
-    MenuVisible = true, Version = "2.50", Connections = {},
+    MenuVisible = true, Version = "2.49", Connections = {},
     PersistenceEnabled=previousSettings.PersistenceEnabled~=false, AutoJoinWorld=previousSettings.AutoJoinWorld~=false, AutoResumeFarm=previousSettings.AutoResumeFarm~=false,
     UseCurrentServer=previousSettings.UseCurrentServer~=false, ServerSelectionExcluded=type(previousSettings.ServerSelectionExcluded)=="table" and previousSettings.ServerSelectionExcluded or {}, LastFloor=currentFloor, WorldOpen=false, FloorTravelling=false, PersistenceStatus=continuity.Store.Status,
     LowGraphics = previousSettings.LowGraphics ~= false, LowGraphicsStatus = "พร้อมลดกราฟิก", LowGraphicsChanged = 0, SettingsOpen = false, MaterialPickerOpen = false, UiScale = previousSettings.UiScale or 1,
@@ -1698,6 +1697,7 @@ local questBrowser
 function state.CreateSecretRoomPage(state, options)
     local make, text, card, button = options.Make, options.Text, options.Card, options.Button
     local colors, nav = options.Theme, options.Nav
+    local floorOne = currentFloor == 1
     local api, rows, connections = {}, {}, {}
     local frame, tab, roomList, empty, status, totals, start, hoverToggle, hoverMinus, hoverPlus, hoverHeight
     local lastRoomsAt, destroyed = -math.huge, false
@@ -1762,7 +1762,7 @@ function state.CreateSecretRoomPage(state, options)
                 row.LayoutOrder = index
                 row.Title.Text = (room.Selected and "✓ " or "") .. tostring(room.Name or "ห้องลับ")
                 local distance = tonumber(room.Distance)
-                row.Detail.Text = (room.Used and "เปิดแล้ว" or "พร้อมเปิด")
+                row.Detail.Text = (room.Boss and (room.Ready and "พร้อมสู้" or "รอเกิด") or room.Used and "เปิดแล้ว" or "พร้อมเปิด")
                     .. (distance and (" · " .. number(distance) .. " ม.") or "")
                 row.Active = type(state.SelectSecretRoom) == "function"
                 row.Title.TextColor3 = room.Used and colors.Muted or colors.Text
@@ -1786,19 +1786,19 @@ function state.CreateSecretRoomPage(state, options)
         frame = make("Frame", {Name = "SecretRoomContent", Position = UDim2.fromOffset(190, 64),
             Size = UDim2.fromOffset(280, 306), BackgroundTransparency = 1, Visible = false}, parent)
         api.Frame = frame
-        text("Title", "ห้องลับ · หอคอยชั้น 2", 0, 0, 202, 24, frame, 14, colors.Text).Font = Enum.Font.GothamBold
+        text("Title", floorOne and "ห้องลับ · หอคอยชั้น 1" or "ห้องลับ · หอคอยชั้น 2", 0, 0, 202, 24, frame, 14, colors.Text).Font = Enum.Font.GothamBold
         local refresh = button("รีเฟรช", UDim2.fromOffset(66, 24), UDim2.fromOffset(214, 0), frame)
         refresh.Name, refresh.TextSize = "RefreshSecretRooms", 10
         connect(refresh.Activated, function() api.Refresh(true) end)
         local guide = card("ChestGuide", 0, 30, 280, 60, frame)
-        text("Title", "หีบสุ่มของหรือมอน", 10, 3, 150, 20, guide, 10, colors.AccentLight)
+        text("Title", floorOne and "ห้องสมบัติชั้น 1" or "หีบสุ่มของหรือมอน", 10, 3, 150, 20, guide, 10, colors.AccentLight)
         hoverToggle = button("", UDim2.fromOffset(108,22), UDim2.fromOffset(162,3), guide)
         hoverToggle.Name, hoverToggle.TextSize, hoverToggle.AutoButtonColor = "ToggleSecretRoomLoop", 10, false
         connect(hoverToggle.Activated, function()
             if type(state.SetSecretRoomLoop)=="function"then state.SetSecretRoomLoop(not state.SecretRoomLoopEnabled)end
             api.Refresh(true)
         end)
-        text("Caption", "วาร์ป · 3 เวฟ · ล็อกเป้า · ไม่ถอย", 10, 24, 260, 14, guide, 9, colors.Muted)
+        text("Caption", floorOne and "มินิบอส → ห้องลับ" or "วาร์ป · 3 เวฟ · ตีและแดชหลบ", 10, 24, 260, 14, guide, 9, colors.Muted)
         text("HeightCaption", "ใช้สกิลที่เลือก · ปล่อยท่าจนจบ", 10, 38, 260, 20, guide, 10, colors.Muted)
         hoverMinus = button("−", UDim2.fromOffset(24,20), UDim2.fromOffset(66,38), guide)
         hoverPlus = button("+", UDim2.fromOffset(24,20), UDim2.fromOffset(162,38), guide)
@@ -1816,13 +1816,13 @@ function state.CreateSecretRoomPage(state, options)
         end
         connect(hoverMinus.Activated, function()adjustHeight(-1)end)
         connect(hoverPlus.Activated, function()adjustHeight(1)end)
-        text("RoomCaption", "เลือกห้องที่ต้องการ", 0, 96, 280, 20, frame, 10, colors.Muted)
+        text("RoomCaption", floorOne and "เลือกห้องเริ่มต้น หรือกดเริ่มเลย" or "เลือกห้องที่ต้องการ", 0, 96, 280, 20, frame, 10, colors.Muted)
         roomList = make("ScrollingFrame", {Name = "RoomList", Position = UDim2.fromOffset(0, 120),
             Size = UDim2.fromOffset(280, 86), CanvasSize = UDim2.new(), BackgroundTransparency = 1,
             BorderSizePixel = 0, ScrollBarThickness = 3, ScrollBarImageColor3 = colors.AccentLight,
             ScrollingDirection = Enum.ScrollingDirection.Y}, frame)
         make("UIListLayout", {Padding = UDim.new(0, 4), SortOrder = Enum.SortOrder.LayoutOrder}, roomList)
-        empty = text("Empty", "ยังไม่พบห้อง · เข้าใกล้หอคอยแล้วรีเฟรช", 0, 145, 280, 36, frame, 11, colors.Muted)
+        empty = text("Empty", floorOne and "รอข้อมูลห้องสมบัติ แล้วกดรีเฟรช" or "ยังไม่พบห้อง · เข้าใกล้หอคอยแล้วรีเฟรช", 0, 145, 280, 36, frame, 11, colors.Muted)
         empty.TextWrapped, empty.TextTruncate = true, Enum.TextTruncate.None
         local progress = card("RoomProgress", 0, 214, 280, 52, frame)
         totals = text("Totals", "", 10, 3, 260, 20, progress, 11, colors.AccentLight)
@@ -2131,7 +2131,7 @@ end
 
 -- One frame-driven motion writer; smooth body turns never change walking speed or position.
 local motionController = {}
-;(function()
+do
     local heldHumanoid, savedRotate
     local nativeHeld = false
     function motionController.Release()
@@ -2222,7 +2222,7 @@ local motionController = {}
         end
         motionController.Release()
     end
-end)()
+end
 
 local function invalidateRoute()
     generation += 1
@@ -2253,7 +2253,7 @@ local function requestJump(h)
     return true
 end
 
-function evernightFactories.resolveCombat()
+local function resolveCombat()
     local client = player.PlayerScripts:FindFirstChild("Client")
     local systems = client and client:FindFirstChild("Systems")
     local scriptObject = systems and systems:FindFirstChild("Combat")
@@ -2330,7 +2330,7 @@ function evernightFactories.resolveCombat()
 end
 
 -- Caller runs action methods asynchronously at thread identity 2.
-function evernightFactories.resolveMining()
+local function resolveMining()
     local client = player.PlayerScripts:FindFirstChild("Client")
     local systems = client and client:FindFirstChild("Systems")
     local miningScript = systems and systems:FindFirstChild("Mining")
@@ -2520,7 +2520,7 @@ function evernightFactories.resolveMining()
     return api
 end
 
-function evernightFactories.resolveCrafting()
+local function resolveCrafting()
     local shared = game:GetService("ReplicatedStorage").Shared
     local rules = require(shared.Blacksmith)
     local database = require(shared.ItemDatabase)
@@ -2605,7 +2605,7 @@ function evernightFactories.resolveCrafting()
     return api
 end
 
-function evernightFactories.resolveSelling()
+local function resolveSelling()
     local storage = game:GetService("ReplicatedStorage")
     local items = require(storage.Shared.Items)
     local stateScript = player.PlayerScripts.Client.State
@@ -2744,7 +2744,7 @@ function evernightFactories.resolveSelling()
 end
 
 
-function evernightFactories.createSellBatchRunner(api, options)
+local function createSellBatchRunner(api, options)
     options = options or {}
     local now = options.Clock or os.clock
     local spawn = options.Spawn or task.spawn
@@ -2817,7 +2817,7 @@ function evernightFactories.createSellBatchRunner(api, options)
 end
 
 
-function evernightFactories.resolveFreeRespawn()
+local function resolveFreeRespawn()
     local remote = game:GetService("ReplicatedStorage").Remotes:FindFirstChild("RequestRespawn")
     assert(remote and remote:IsA("RemoteEvent"), "ไม่พบคำสั่งเกิดใหม่แบบปกติของเกม")
     local api = {}
@@ -2840,7 +2840,7 @@ function evernightFactories.resolveFreeRespawn()
     return api
 end
 
-function evernightFactories.createFreeRespawnController(api, options)
+local function createFreeRespawnController(api, options)
     options = options or {}
     local now = options.Clock or os.clock
     local controller = {Enabled = options.Enabled ~= false, Waiting = false,
@@ -2901,7 +2901,7 @@ function evernightFactories.createFreeRespawnController(api, options)
 end
 
 
-function evernightFactories.resolveServiceTravel()
+local function resolveServiceTravel()
     local api = {}
     local rootHeight = 2.2
     local function point(prompt)
@@ -3087,7 +3087,7 @@ function evernightFactories.resolveServiceTravel()
     return api
 end
 
-function evernightFactories.createServiceTravelController(api, options)
+local function createServiceTravelController(api, options)
     options=options or {}
     local now,spawn = options.Clock or os.clock, options.Spawn or task.spawn
     local controller = {}
@@ -3251,9 +3251,16 @@ local function restoreMiningEquipment()
     state.RestoreThread = restoreThread
 end
 
+local function healingThreshold(state)
+    if state.Enabled and state.Mode=="SecretRoom" and state.SecretRoomHealing then return 100 end
+    local threshold=tonumber(state.PotionThreshold) or 60
+    if threshold~=threshold or math.abs(threshold)==math.huge then return 60 end
+    return math.clamp(math.floor(threshold),1,99)
+end
+
 -- Native Client.UI.Menu USE NOW => ConsumeItem(item.uniqueId).
 -- Native HUD uses PotionCooldownHealth plus Config.RemakeConfig.POTION_COOLDOWN.
-function evernightFactories.resolveAutoPotion()
+local function resolveAutoPotion()
     local storage = game:GetService("ReplicatedStorage")
     local client = player.PlayerScripts.Client
     local gameState = require(client.State)
@@ -3318,12 +3325,10 @@ function evernightFactories.resolveAutoPotion()
             CooldownAt = mark, CooldownLeft = left, ServerTime = serverTime, Stock = stock, Best = best}
     end
 
-    function api.Request(expected, threshold)
+    function api.Request(expected)
         -- Revalidate in the deferred worker so a healed/dead/respawned character never consumes a stale selection.
         local snap = api.Snapshot()
-        threshold = tonumber(state.PotionThreshold) or tonumber(threshold) or 60
-        if threshold ~= threshold or math.abs(threshold) == math.huge then threshold = 60 end
-        threshold = math.clamp(math.floor(threshold), 1, 99)
+        local threshold = healingThreshold(state)
         if not state.Alive or not state.AutoPotion or not snap.Alive or snap.Blocked or snap.CooldownLeft > 0
             or snap.Character ~= expected.Character or snap.Health * 100 >= snap.MaxHealth * threshold then return false end
         local item = find(expected.Id)
@@ -3348,7 +3353,7 @@ function evernightFactories.resolveAutoPotion()
     return api
 end
 
-function evernightFactories.createAutoPotionController(api, options)
+local function createAutoPotionController(api, options)
     options = options or {}
     local s = assert(options.State, "Potion controller requires State")
     local clock = options.Clock or os.clock
@@ -3410,9 +3415,7 @@ function evernightFactories.createAutoPotionController(api, options)
         if not ok or type(snap) ~= "table" then status("รอข้อมูลยาจากเกม") return end
         s.PotionStock = snap.Stock or 0
         if not snap.Alive then status("รอเกิดใหม่ก่อนใช้ยา") return end
-        local threshold = tonumber(s.PotionThreshold) or 60
-        if threshold ~= threshold or math.abs(threshold) == math.huge then threshold = 60 end
-        threshold = math.clamp(math.floor(threshold), 1, 99)
+        local threshold = healingThreshold(s)
         if snap.Health * 100 >= snap.MaxHealth * threshold then
             status("พร้อมใช้ยาเมื่อเลือดต่ำกว่า " .. threshold .. "% • มี " .. s.PotionStock .. " ขวด") return
         end
@@ -3432,7 +3435,7 @@ function evernightFactories.createAutoPotionController(api, options)
             end
             if options.BeforeRequest then options.BeforeRequest() end
             pending.Submitted = true
-            local called, receipt = pcall(api.Request, expected, threshold)
+            local called, receipt = pcall(api.Request, expected)
             if controller.Destroyed or controller.Pending ~= pending then return end
             pending.Receipt = called and type(receipt) == "table" and receipt or nil
             pending.Error = not called and receipt or nil
@@ -3443,7 +3446,7 @@ function evernightFactories.createAutoPotionController(api, options)
     return controller
 end
 
-function evernightFactories.resolveAutoSkills()
+local function resolveAutoSkills()
     local native = require(player.PlayerScripts.Client.SwordSkills.Controller)
     local api = {Owned = false, LastAttempt = -100, Cursor = 0}
     function api.Choices()
@@ -3473,7 +3476,7 @@ function evernightFactories.resolveAutoSkills()
             local best,rank
             for slot=1,4 do
                 local id,def=native.skillForSlot(slot)
-                if id and def and state.SkillSelection[id]==true and native.CanCast(id,true)then
+                if id and def and state.SkillSelection[id]==true and native.cooldownLeft(id)<=0 and native.CanCast(id,true)then
                     local score=priorities[id]or 5
                     if not rank or score<rank then best,rank={Slot=slot,Id=id,Name=def.Name},score end
                 end
@@ -3492,9 +3495,11 @@ function evernightFactories.resolveAutoSkills()
         local c,h,root = character()
         local targetRoot = target and mobRoot(target)
         local id = native.skillForSlot(row.Slot)
+        local rangeDelta = root and targetRoot and (state.Mode=="SecretRoom" and questCombatDelta(root,target,targetRoot) or targetRoot.Position-root.Position)
         if not state.Alive or not state.Enabled or not state.SkillsEnabled or not state.SkillSelection[row.Id]
             or (state.Mode ~= "Combat" and state.Mode ~= "Quest" and state.Mode ~= "SecretRoom" and not (state.Mode == "Mining" and state.MiningDefenseTarget == target)) or not c or not valid(target) or not targetRoot
-            or id ~= row.Id or (targetRoot.Position-root.Position).Magnitude > 14 or not native.CanCast(id,true) then return false end
+            or id ~= row.Id or not rangeDelta or rangeDelta.Magnitude > 14
+            or (state.Mode=="SecretRoom" and native.cooldownLeft(id)>0) or not native.CanCast(id,true) then return false end
         api.LastAttempt, api.Cursor = os.clock(), row.Slot
         local direction = targetRoot.Position-root.Position
         direction = Vector3.new(direction.X,0,direction.Z)
@@ -3531,7 +3536,7 @@ end
 -- Advance the native StoryCinema input handler, just as pressing Next does.
 -- The caller must first establish that this is an owned, supported quest scene.
 local fastQuestDialogue
-;(function()
+do
     local nativeInput, nativeStack, checkedAt, advancedAt = nil, nil, -100, -100
     local advancedToken
     local function focusedStack()
@@ -3591,9 +3596,9 @@ local fastQuestDialogue
         advancedAt=os.clock()
         return pcall(top.handler,"Confirm")
     end
-end)()
+end
 
-function evernightFactories.resolveForgeQuest()
+local function resolveForgeQuest()
     local client = player.PlayerScripts.Client
     local gameState = require(client.State)
     local config = require(game:GetService("ReplicatedStorage").Shared.StoryConfig)
@@ -4068,7 +4073,7 @@ function evernightFactories.resolveForgeQuest()
 end
 
 -- Floor 2 native NPC stone quests. Rewards and repeatability are confirmed by the server.
-function evernightFactories.resolveFloor2StoneQuest(storyApi)
+local function resolveFloor2StoneQuest(storyApi)
     local order={"floor2MinibossApeQuest","floor2EliteTaurusQuest"}
     local definitions={
         floor2MinibossApeQuest={Title="The Ape King",Mob="Snow Ape King",Npc="Floor2QuestNPC4"},
@@ -4593,7 +4598,7 @@ function evernightFactories.resolveFloor2StoneQuest(storyApi)
 end
 
 -- Native NPC quest flow, separate from Story missions and their cooldowns.
-function evernightFactories.resolveNpcStoneQuest(storyApi)
+local function resolveNpcStoneQuest(storyApi)
     local id,title,mobKind="nepenthesHuntQuest","Forest Clearing","Little Nepenthes"
     local store=require(player.PlayerScripts.Client.State)
     local remotes=game:GetService("ReplicatedStorage").Remotes
@@ -4954,7 +4959,7 @@ end
 
 -- Original Evernight reference, bundled locally; no image hosting or paid upload.
 local evernightArtwork = {Filename = "evernight.jpg"}
-;(function()
+do
     local encoded = "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"
     local function decodeBase64(value)
         local alphabet, lookup, output = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/", {}, {}
@@ -4981,7 +4986,7 @@ local evernightArtwork = {Filename = "evernight.jpg"}
         if ok and type(asset) == "string" then evernightArtwork.Asset = asset end
     end
     state.ArtworkAvailable = evernightArtwork.Asset ~= nil
-end)()
+end
 
 -- Manual inventory snapshot only; no HTTP, remotes, inventory writes, currency, or level data.
 -- Native evidence: Client.State.get().inventory; Items.get/getDisplayName/isStackable/getCategory.
@@ -5099,7 +5104,7 @@ end
 
 -- Insert before updateStatus. Run webhookStep in its own 0.5-second worker.
 local startWebhookTracking, stopWebhookTracking, webhookStep, cancelWebhookRequest
-;(function()
+do
     local HttpService = game:GetService("HttpService")
     local inherited = type(previousSettings.Webhook) == "table" and previousSettings.Webhook or {}
     local function validUrl(value)
@@ -5617,10 +5622,10 @@ local startWebhookTracking, stopWebhookTracking, webhookStep, cancelWebhookReque
     end
     observeLevels(enabled)
     publish()
-end)()
+end
 
 -- BEGIN FLOOR 2 QUEST BROWSER
-;(function()
+do
 -- Floor 2 quest catalog: 34 quests (7 NPC / 20 Story / 7 Black Cats), plus 2 Coming Soon placeholders.
 -- Source: work/floor2-quests.json and outputs/floor2-quests.md, inspected 2026-10-24.
 -- Display-only data. Open means released, not that personal prerequisites are already satisfied.
@@ -6325,11 +6330,11 @@ do
         api.Update(true)
     end
 end
-end)()
+end
 -- END FLOOR 2 QUEST BROWSER
 
 -- Preference-only controller. The factory can be rendered with an isolated state.
-function evernightFactories.createFloor1QuestOrderUi(state, currentFloor, normalize, save, refresh)
+local function createFloor1QuestOrderUi(state, currentFloor, normalize, save, refresh)
     local api = {Rows = {}}
     local names = {
         m_forge = "Hold the Forge",
@@ -6648,7 +6653,7 @@ local function queueStatus()
     state.HudThread = hudThread
 end
 
-view.Floor1QuestOrderUi = evernightFactories.createFloor1QuestOrderUi(state, currentFloor, normalizeFloor1QuestOrder,
+view.Floor1QuestOrderUi = createFloor1QuestOrderUi(state, currentFloor, normalizeFloor1QuestOrder,
     function() continuity.Save(state, true) end, queueStatus)
 
 function state.SetQuestAutoPage(open)
@@ -7586,6 +7591,24 @@ function state.CreateSecretRoomDefense(options)
             return true
         end
         if not imminent then api.Reset("Idle") return false end
+        if options.DodgeOnly then
+            ownedMovement=false
+            status="Tracking"
+            if now<imminent.DodgeAt or now>imminent.Deadline or imminent.DashAttempted then return false end
+            local cooldown,stamina=call("DashCooldown",nil),call("Stamina",nil)
+            if not finite(cooldown) or cooldown>0 or not finite(stamina) or stamina<cost then return false end
+            imminent.DashAttempted=true
+            if call("MoveAway",false,imminent.Mob)~=true or call("Prepare",false)~=true then return false end
+            if call("Dash",false)~=true then
+                counters.DashRejected+=1
+                return false
+            end
+            ownedMovement=true
+            counters.Prepared+=1
+            counters.Dashes+=1
+            status="Dash"
+            return true
+        end
         if attackDuringWindup and now < imminent.DodgeAt-prepareLead then
             if recent then
                 -- A new distant deadline must not remove protection for a just-landed hit.
@@ -7626,7 +7649,7 @@ function state.CreateSecretRoomDefense(options)
         call("StopMove", nil)
         if not ownedBlock and now-lastBlockTry >= 0.2 then
             lastBlockTry = now
-            if call("HoldBlock", false, true) == true then
+            if call("HoldBlock", false, true, imminent.Mob) == true then
                 ownedBlock = true
                 counters.Blocks += 1
             end
@@ -8262,21 +8285,22 @@ function state.CreateSecretRoomSkillWindow(options)
     return api
 end
 
--- Native Floor 2 treasure rooms. Hover owns only the current character's collision.
+-- Treasure rooms on Floors 1 and 2 share encounter tracking and room rotation.
 function state.ResolveSecretRoom()
     local native=require(player.PlayerScripts.Client.Systems.Combat)
     local api={Active=false,Token=0,Phase="Idle",Used={},Seen={},Kills=0,Dodges=0,OpenCount=0}
-    local rooms,session,defense,entryThread,hover,walker,skillWindow,finishRoom
+    local rooms,session,defense,entryThread,hover,walker,skillWindow,finishRoom,recoverBoss
     local ownedLight,ownedLightCharacter
     local releaseLock=function()end
-    local requiredWaves,finalQuiet,waveWaitLimit=3,8,90
+    local floorOne=currentFloor==1
+    local requiredWaves,finalQuiet,waveWaitLimit=3,currentFloor==2 and 2 or 8,90
     local retreatHealthRatio=0.30
     -- Continue fighting through low health unless explicitly opted into retreat.
     state.SecretRoomAutoRetreat=previousSettings.SecretRoomAutoRetreat==true
     state.SecretRoomInstantEntry=true
     state.SecretRoomLoopEnabled=previousSettings.SecretRoomLoopEnabled~=false
     state.SecretRoomRoomsCleared=0 state.SecretRoomLoopCycles=0
-    api.RetryAfter={}
+    api.RetryAfter,api.ScoutAfter={},{}
     -- Resume only the supported ground strategy after the failed aerial trials.
     state.SecretRoomHover=false
     state.SecretRoomHoverHeight=math.clamp(math.floor(tonumber(previousSettings.SecretRoomHoverHeight) or 9),4,10)
@@ -8290,7 +8314,7 @@ function state.ResolveSecretRoom()
     local function describe()
         local dungeon=workspace:FindFirstChild("Dungeon")
         local out={}
-        if currentFloor~=2 or not dungeon then return out end
+        if (not floorOne and currentFloor~=2) or not dungeon then return out end
         for _,model in dungeon:QueryDescendants("Model#TrapRoom") do
             local zone=model:FindFirstChild("SpawnZone")
             local chest=model:FindFirstChild("Chest")
@@ -8304,17 +8328,28 @@ function state.ResolveSecretRoom()
         end
         table.sort(out,function(a,b)return a.Id<b.Id end)
         for i,row in out do row.Name="ห้อง "..i end
+        if floorOne then
+            local halls=dungeon:FindFirstChild("Dungeon")
+            local mini=halls and halls:FindFirstChild("miniboss room Area")
+            local zone=mini and mini:FindFirstChild("DustVolume",true)
+            if zone and zone:IsA("BasePart") then
+                out[#out+1]={Id="boss:1:minotaur",Name="มินิบอส Minotaur",Model=mini,Zone=zone,
+                    ScoutPoint=Vector3.new(-955,-480,1326),Mob="MinotaurBoss",Kind="Minotaur"}
+            end
+        end
         return out
     end
     local function inside(room,position,padding)
         if not room or not room.Zone:IsDescendantOf(room.Model) or not room.Model.Parent then return false end
         local p=room.Zone.CFrame:PointToObjectSpace(position)
         local h=room.Zone.Size/2+Vector3.one*(padding or 0)
+        if room.Mob then h+=Vector3.new(0,8,0) end
         return math.abs(p.X)<=h.X and math.abs(p.Y)<=h.Y and math.abs(p.Z)<=h.Z
     end
     local function playerInside(position)
         if not session or not session.Room.Zone:IsDescendantOf(session.Room.Model) then return false end
         local room=session.Room
+        if floorOne then return inside(room,position,room.Mob and 24 or 2) end
         local localPoint=room.Zone.CFrame:PointToObjectSpace(position)
         local half=room.Zone.Size/2
         local allowance=state.SecretRoomUnderground and state.SecretRoomUndergroundDepth+1 or 3
@@ -8362,13 +8397,41 @@ function state.ResolveSecretRoom()
             root.CFrame=CFrame.new(point)*root.CFrame.Rotation root.AssemblyLinearVelocity=Vector3.zero
         end
     end
+    local function bossTarget(room,preferred)
+        local folder=workspace:FindFirstChild("Mobs")
+        local function alive(mob)
+            local health=mob and mob:GetAttribute("Health")
+            return mob and mob.Parent==folder and mob:IsA("Model") and mobRoot(mob)~=nil
+                and mob.Name==room.Mob and mob:GetAttribute("MobKind")==room.Kind
+                and mob:GetAttribute("StoryOwner")==nil and not mob:GetAttribute("IsDead")
+                and type(health)=="number" and health>0
+        end
+        -- Keep the same encounter when it crosses the ambience volume's edge.
+        if alive(preferred) then return preferred end
+        local mob=folder and folder:FindFirstChild(room.Mob)
+        if alive(mob) and inside(room,mobRoot(mob).Position,32) then
+            return mob
+        end
+    end
+    local function bossDefeated(bound)
+        local mob=bound and bound.BossTarget
+        if not mob then return false end
+        local tracked=bound.Tracked and bound.Tracked[mob]
+        local health=mob:GetAttribute("Health")
+        return (tracked and tracked.Dead==true) or mob:GetAttribute("IsDead")==true
+            or (type(health)=="number" and health<=0)
+    end
     function api.Rooms()
         rooms=describe()
         local _,_,root=character()
         local out={}
-        for _,row in rooms do out[#out+1]={Id=row.Id,Name=row.Name,
-            Distance=root and (root.Position-row.Zone.Position).Magnitude or 0,
-            Selected=row.Id==state.SelectedSecretRoom,Used=api.Used[row.Id]==true} end
+        for _,row in rooms do
+            out[#out+1]={Id=row.Id,Name=row.Name,
+                Distance=root and (root.Position-row.Zone.Position).Magnitude or 0,
+                Selected=row.Id==state.SelectedSecretRoom,Boss=row.Mob~=nil,
+                Ready=row.Mob~=nil and bossTarget(row)~=nil,
+                Used=row.Prompt~=nil and api.Used[row.Id]==true and not row.Prompt.Enabled}
+        end
         return out
     end
     function api.Select(id)
@@ -8388,6 +8451,7 @@ function state.ResolveSecretRoom()
             or state.Mode~="SecretRoom" or player.Character~=session.Character
             or not mob or typeof(mob)~="Instance"
             or mob.Parent~=workspace:FindFirstChild("Mobs") or not mob:IsA("Model") then return false end
+        if session.Room.Mob then return mob==session.BossTarget and mob==bossTarget(session.Room,mob) end
         local owner=mob:GetAttribute("StoryOwner")
         if owner~=nil then return false end -- Never take story/private quest enemies.
         local part=mobRoot(mob)
@@ -8476,7 +8540,7 @@ function state.ResolveSecretRoom()
     function api.Stop(reason)
         local nextJob=api.NextJob api.NextJob=nil
         if nextJob and nextJob.Thread and nextJob.Thread~=coroutine.running()then pcall(task.cancel,nextJob.Thread)end
-        state.SecretRoomTransitioning=false state.SecretRoomNextRoom=nil
+        state.SecretRoomTransitioning=false state.SecretRoomNextRoom=nil state.SecretRoomHealing=false
         releaseLock()
         ownedLight,ownedLightCharacter=nil,nil
         if api.LightDiagnostics then api.LightDiagnostics.LastCancelReason="Stopped" end
@@ -8552,8 +8616,8 @@ function state.ResolveSecretRoom()
         end
         local dungeon=workspace:FindFirstChild("Dungeon")
         if not dungeon or not session.Room.Zone:IsDescendantOf(session.Room.Model)
-            or not session.Room.Main:IsDescendantOf(session.Room.Model)
-            or not session.Room.Prompt:IsDescendantOf(session.Room.Model)
+            or (not session.Room.Mob and (not session.Room.Main:IsDescendantOf(session.Room.Model)
+                or not session.Room.Prompt:IsDescendantOf(session.Room.Model)))
             or not session.Room.Model:IsDescendantOf(dungeon) then
             stop("ห้องเปลี่ยนหรือโหลดออก • หยุดแล้ว") return false
         end
@@ -8561,6 +8625,11 @@ function state.ResolveSecretRoom()
             stop("เลือดเหลือ 30% หรือน้อยกว่า • ถอยและหยุดห้องลับแล้ว",true) return false
         end
         if api.Phase~="Entering" and not playerInside(root.Position) then
+            if session.Room.Mob and session.BossEngaged then
+                if bossDefeated(session) then return true end
+                recoverBoss("หลุดขอบห้อง • กลับไปสู้มินิบอสตัวเดิม")
+                return false
+            end
             if state.SecretRoomLoopEnabled then finishRoom("ออกจากห้อง • รอไปห้องถัดไป","Incomplete")
             else stop("ออกจากห้อง • หยุดไล่มอนแล้ว")end
             return false
@@ -8756,8 +8825,8 @@ function state.ResolveSecretRoom()
         elseif not beforeKnown or not afterKnown or after~=ownedLight then
             ownedLight,ownedLightCharacter=nil,nil
         end
-        -- Keep the native combo held only after proving this session created the swing.
-        if not attackOk or not ownedLight then
+        -- Keep light input held across windups; a dodge, skill or lost target releases it.
+        if not attackOk then
             local released,releaseError=pcall(nativeCall,combat.Release)
             if not released then error(releaseError)end
         end
@@ -8791,7 +8860,8 @@ function state.ResolveSecretRoom()
     end
     -- END OWNED LIGHT READER
     defense=state.CreateSecretRoomDefense({
-        AttackDuringWindup=true,PrepareLead=0.08,ExpiryGrace=0.2,
+        AttackDuringWindup=true,DodgeOnly=true,PrepareLead=0.08,
+        DashLead=currentFloor==2 and 0.10 or 0.14,ExpiryGrace=currentFloor==2 and 0.15 or 0.2,
         Ready=function()
             local c,h,root=character()
             return api.Active and session~=nil and state.Enabled and state.Alive
@@ -8813,12 +8883,20 @@ function state.ResolveSecretRoom()
         Prepare=function()
             if autoSkills and autoSkills.Busy()then return false end
             pcall(combat.Release)
-            api.CancelOwnedLight()
             return not autoSkills or not autoSkills.Busy()
         end,
-        HoldBlock=function(on)
+        HoldBlock=function(on,mob)
             if on then
                 if native.isBlocking() then return false end
+                if currentFloor==2 then
+                    local _,_,root=character()
+                    local part=mobRoot(mob)
+                    if root and part then
+                        local delta=part.Position-root.Position
+                        local facing=Vector3.new(delta.X,0,delta.Z)
+                        if facing.Magnitude>.1 then root.CFrame=CFrame.lookAt(root.Position,root.Position+facing) end
+                    end
+                end
                 nativeCall(native.blockDown) return native.isBlocking()
             end
             nativeCall(native.blockUp) return not native.isBlocking()
@@ -9042,6 +9120,7 @@ function state.ResolveSecretRoom()
         })
     end
     local function roomHasMobs(room)
+        if room.Mob then return bossTarget(room)~=nil end
         local folder=workspace:FindFirstChild("Mobs")if not folder then return false end
         for _,mob in folder:GetChildren()do
             local part=mobRoot(mob)local health=mob:GetAttribute("Health")
@@ -9050,9 +9129,177 @@ function state.ResolveSecretRoom()
         end
         return false
     end
+    local function roomReady(room)
+        return (room.Prompt and room.Prompt.Enabled) or roomHasMobs(room)
+    end
+    local function priorityBoss(catalog)
+        if not floorOne then return end
+        if api.UnfinishedBossId then
+            for index,room in catalog do
+                if room.Id==api.UnfinishedBossId and room.Mob then return room,index end
+            end
+        end
+        local now=os.clock()
+        for index,room in catalog do
+            if room.Mob and now>=(api.RetryAfter[room.Id] or 0)
+                and (roomReady(room) or now>=(api.ScoutAfter[room.Id] or 0)) then
+                return room,index
+            end
+        end
+    end
+    local function enterFloorOne(room,token,c,h,root)
+        if combat.IsFocused() then finishRoom("ปิดหน้าต่างเกมก่อนเริ่ม","Paused") return end
+        -- Validate a standing point near the encounter using loaded room geometry.
+        local params=RaycastParams.new()
+        params.RespectCanCollide=true
+        params.FilterType=Enum.RaycastFilterType.Exclude
+        params.FilterDescendantsInstances={c,workspace.Mobs,room.Chest}
+        local bossPart=mobRoot(room.Mob and bossTarget(room,session.BossTarget))
+        local scouting=room.Mob and not bossPart
+        if scouting then api.ScoutAfter[room.Id]=os.clock()+75 end
+        local origin=bossPart and bossPart.CFrame or scouting and CFrame.new(room.ScoutPoint) or room.Zone.CFrame
+        local radius=bossPart and (math.max(bossPart.Size.X,bossPart.Size.Z)/2+5) or 6
+        local depth=room.Mob and 45 or 18
+        local pos,bestDistance
+        local offsets=scouting and {Vector3.zero} or {Vector3.new(radius,0,0),Vector3.new(-radius,0,0),Vector3.new(0,0,radius),Vector3.new(0,0,-radius)}
+        for _,offset in offsets do
+            local point=bossPart and (origin.Position+offset) or origin:PointToWorldSpace(offset)
+            local hit=workspace:Raycast(point,Vector3.new(0,-depth,0),params)
+            if hit and hit.Normal.Y>=.6 then
+                local standing=hit.Position+Vector3.new(0,h.HipHeight+root.Size.Y/2+.1,0)
+                if inside(room,standing,room.Mob and 24 or 0) then
+                    if scouting and hit.Instance:IsDescendantOf(room.Model) then
+                        pos=standing
+                        break
+                    elseif bossPart and hit.Instance:IsDescendantOf(room.Model) then
+                        local distance=(bossPart:GetClosestPointOnSurface(standing)-standing).Magnitude
+                        if not bestDistance or distance<bestDistance then pos,bestDistance=standing,distance end
+                    elseif not room.Mob and (standing-room.Main.Position).Magnitude<=room.Prompt.MaxActivationDistance then
+                        pos=standing
+                        break
+                    end
+                end
+            end
+        end
+        if not pos then finishRoom("ไม่พบจุดลงพื้นในห้อง • ข้ามห้องนี้","Unavailable") return end
+        combat.Unsheathe()
+        local drawDeadline=os.clock()+6
+        while c:GetAttribute("Sheathed") and os.clock()<drawDeadline do
+            task.wait(.1)
+            if not current(token) then return end
+        end
+        if c:GetAttribute("Sheathed") then stop("ชักอาวุธไม่สำเร็จ • หยุดก่อนเข้าห้อง") return end
+        local entryDistance=room.Mob and 18 or room.Prompt.MaxActivationDistance
+        local entryPoint=room.Mob and pos or room.Main.Position
+        if session.RecoveringBoss or not playerInside(root.Position) or (root.Position-entryPoint).Magnitude>entryDistance then
+            local remaining=8-(os.clock()-(api.LastWarpAt or -100))
+            if remaining>0 then
+                task.wait(remaining)
+                if not current(token) then return end
+            end
+            root.CFrame=CFrame.new(pos)*root.CFrame.Rotation
+            root.AssemblyLinearVelocity=Vector3.zero
+            api.LastWarpAt=os.clock()
+            task.wait(.4)
+            if not current(token) then return end
+        end
+        if not playerInside(root.Position) then finishRoom("เข้าไม่ถึงห้อง • ข้ามห้องนี้","Unavailable") return end
+        if room.Mob then
+            if not bossDefeated(session) and not bossTarget(room,session.BossTarget) then
+                status("กำลังตรวจห้อง "..room.Name)
+                local untilAt=os.clock()+7
+                local found
+                repeat
+                    found=bossTarget(room,session.BossTarget)
+                    if found then session.BossTarget=found break end
+                    task.wait(.15)
+                    if not current(token) then return end
+                until os.clock()>=untilAt
+                if not found then
+                    finishRoom("ห้องบอสยังว่าง • ไปห้องถัดไป","Unavailable")
+                    return
+                end
+            end
+            if session.BossTarget then
+                session.BossEngaged=true api.UnfinishedBossId=room.Id
+            end
+            api.Phase="Waiting"
+            return
+        end
+        if roomHasMobs(room) then
+            api.Phase="Waiting"
+            return
+        end
+        local prompt=room.Prompt
+        if not prompt.Enabled or (root.Position-room.Main.Position).Magnitude>prompt.MaxActivationDistance then
+            finishRoom("หีบยังไม่พร้อมเปิด • ข้ามห้องนี้","Unavailable")
+            return
+        end
+        api.Phase="Waiting"
+        session.Opening=true
+        status("กำลังเปิดหีบชั้น 1")
+        local useFire=type(fireproximityprompt)=="function"
+        api.LastOpen={Method=useFire and "ProximityPrompt" or "PromptHold",Accepted=false}
+        if useFire then
+            executorCall(fireproximityprompt,prompt)
+        else
+            session.PromptOwned=true
+            prompt:InputHoldBegin()
+            task.wait(prompt.HoldDuration+.2)
+            if not current(token) then return end
+            prompt:InputHoldEnd()
+            session.PromptOwned=false
+        end
+        local deadline=os.clock()+3
+        repeat
+            task.wait(.1)
+            if not current(token) then return end
+        until not prompt.Enabled or roomHasMobs(room) or os.clock()>=deadline
+        session.Opening=false
+        if prompt.Enabled and not roomHasMobs(room) then
+            finishRoom("เปิดหีบไม่สำเร็จ • ไปห้องถัดไป","FailedOpen")
+            return
+        end
+        api.LastOpen.Accepted=true
+        api.OpenCount+=1
+        state.SecretRoomOpenCount=api.OpenCount
+        api.Used[room.Id]=true
+    end
+    recoverBoss=function(reason)
+        local bound=session
+        if not bound or not bound.Room.Mob or not bound.BossEngaged or bossDefeated(bound)
+            or not current(api.Token) or api.Phase=="Entering" then return end
+        local now=os.clock()
+        if now-(bound.BossRecoveryAt or -100)<8 then return end
+        local c,h,root=character()
+        if c~=bound.Character or not h or h.Health<=0 or not root then return end
+        bound.BossRecoveryAt=now bound.BossProgressAt=now bound.EmptySince=nil
+        bound.BossRecoveries=(bound.BossRecoveries or 0)+1 bound.BossRecoveryReason=reason
+        bound.RecoveringBoss=true
+        api.Phase="Entering"
+        releaseLock() state.Target=nil clearMotion() defense.Reset()
+        status(reason)
+        local token=api.Token
+        entryThread=task.spawn(function()
+            local set=setthreadidentity or setidentity if set then set(2) end
+            task.wait()
+            if not current(token) or session~=bound then return end
+            local ok,err=xpcall(function()enterFloorOne(bound.Room,token,c,h,root)end,debug.traceback)
+            if not current(token) or session~=bound then return end
+            bound.RecoveringBoss=false entryThread=nil
+            if not ok then state.SecretRoomError=tostring(err) stop("กลับเข้าห้องมินิบอสไม่สำเร็จ • หยุดแล้ว")end
+        end)
+    end
+    local function waitingForHealth(h)
+        if currentFloor~=2 or h.Health>=h.MaxHealth then return false end
+        api.Phase="Healing"
+        status(string.format("รอเลือดเต็ม • %.0f/%.0f HP",h.Health,h.MaxHealth))
+        return true
+    end
     function api.QueueNextRoom(fromId)
         local job={FromId=fromId,Attempts=0,Token=api.Token}
         api.NextJob=job state.SecretRoomTransitioning=true api.Phase="NextRoom"
+        state.SecretRoomHealing=currentFloor==2
         local schedule
         local function ready()
             return api.NextJob==job and api.Token==job.Token and state.Alive and state.Enabled
@@ -9067,16 +9314,20 @@ function state.ResolveSecretRoom()
                 if not c or not h or not root or h.Health<=0 or state.Respawning then
                     status("วนห้อง • รอเกิดใหม่")schedule(3)return
                 end
+                if waitingForHealth(h) then schedule(.5)return end
+                api.Phase="NextRoom"
                 if type(combat.IsFocused)=="function"and combat.IsFocused()then
                     status("วนห้อง • รอปิดหน้าต่างของเกม")schedule(3)return
                 end
                 local catalog=describe()local index=0
                 for i,row in catalog do if row.Id==fromId then index=i break end end
-                local chosen,chosenIndex
-                for offset=1,#catalog do
-                    local i=(index+offset-1)%#catalog+1 local row=catalog[i]
-                    if os.clock()>=(api.RetryAfter[row.Id]or 0)and(row.Prompt.Enabled or roomHasMobs(row))then
-                        chosen,chosenIndex=row,i break
+                local chosen,chosenIndex=priorityBoss(catalog)
+                if not chosen then
+                    for offset=1,#catalog do
+                        local i=(index+offset-1)%#catalog+1 local row=catalog[i]
+                        if os.clock()>=(api.RetryAfter[row.Id]or 0)and roomReady(row) then
+                            chosen,chosenIndex=row,i break
+                        end
                     end
                 end
                 if not chosen then status("วนครบแล้ว • รอห้องพร้อมเปิดอีกครั้ง")schedule(8)return end
@@ -9090,9 +9341,25 @@ function state.ResolveSecretRoom()
         schedule(8)
     end
     finishRoom=function(reason,outcome)
+        -- An engaged miniboss owns this route until an observed death, even if
+        -- entry, streaming or combat progress temporarily fails.
+        if session and session.Room.Mob and session.BossEngaged
+            and not bossDefeated(session) and outcome~="Died" then
+            api.Phase="Waiting" session.EmptySince=session.EmptySince or os.clock()
+            status("ยังยืนยันมินิบอสตายไม่ได้ • รอสู้ต่อในห้องเดิม")
+            return
+        end
         local fromId=session and session.Room.Id or state.SelectedSecretRoom
         local keepGoing=state.Alive and state.Enabled and state.Mode=="SecretRoom"and state.SecretRoomLoopEnabled
-        if outcome=="Completed"then state.SecretRoomRoomsCleared+=1 end
+        if outcome=="Completed"then
+            state.SecretRoomRoomsCleared+=1
+            if session and session.Room.Mob then
+                api.ScoutAfter[fromId]=os.clock()+75 api.UnfinishedBossId=nil
+                api.LastBossCompletion={Room=fromId,Confirmed=bossDefeated(session),
+                    Health=session.BossTarget and session.BossTarget:GetAttribute("Health"),
+                    Recoveries=session.BossRecoveries or 0}
+            end
+        end
         if fromId then api.RetryAfter[fromId]=os.clock()+(outcome=="FailedOpen"and 30 or 10)end
         api.LastRoomOutcome=outcome
         api.Stop(reason)
@@ -9105,6 +9372,15 @@ function state.ResolveSecretRoom()
         end
     end
     function api.CharacterLost()
+        if currentFloor==2 and session then
+            local completion=completionSnapshot(session)
+            if completion.WavesCleared>=requiredWaves and not completion.Overflow
+                and completion.Tracked>0 and completion.ConfirmedKills==completion.Tracked then
+                session.Completed=true state.SecretRoomCompleted=true
+                finishRoom("เคลียร์ครบ 3 เวฟ • รอเกิดใหม่และรอเลือดเต็ม","Completed")
+                return
+            end
+        end
         if state.SecretRoomLoopEnabled and state.Enabled then finishRoom("วนห้อง • รอเกิดใหม่แล้วไปต่อ","Died")
         else stop("ตัวละครเปลี่ยนหรือตาย • หยุดห้องลับแล้ว")end
     end
@@ -9116,28 +9392,59 @@ function state.ResolveSecretRoom()
     end
     function api.Start()
         if state.SecretRoomRetreating then status("กำลังถอย • รอจุดปลอดภัยก่อนเริ่มใหม่") return false end
-        if currentFloor~=2 then status("ห้องลับนี้ใช้ในชั้น 2") return false end
+        if not floorOne and currentFloor~=2 then status("ห้องลับรองรับชั้น 1 และชั้น 2") return false end
         if state.SecretRoomHover or state.SecretRoomUnderground then
             status("ห้องลับรุ่นนี้ใช้เดินบนพื้น • ปิดลอยก่อนเริ่ม") return false
         end
         local c,h,root=character()
-        if not c or not h or h.Health<=0 then status("รอตัวละครเกิดใหม่")return false end
+        if not c or not h or not root or h.Health<=0 then status("รอตัวละครเกิดใหม่")return false end
+        if not workspace:FindFirstChild("Mobs") then status("รอข้อมูลมอนสเตอร์โหลด") return false end
+        local damage=c:GetAttribute("WeaponDamage")
+        if type(damage)=="number" and damage<=0 then
+            status("สวมอาวุธที่ใช้โจมตีได้ก่อนเริ่มเคลียร์ห้อง")
+            return false
+        end
+        if waitingForHealth(h) then
+            if state.SecretRoomLoopEnabled then
+                api.QueueNextRoom(state.SelectedSecretRoom)
+                api.Phase="Healing"
+                return true
+            end
+            return false
+        end
         if state.SecretRoomAutoRetreat and h.Health/h.MaxHealth<.70 then status("รอเลือดอย่างน้อย 70%")return false end
         rooms=describe()
-        local chosen,closest
-        for _,row in rooms do
-            if row.Id==state.SelectedSecretRoom then chosen=row break end
-            local distance=(row.Zone.Position-root.Position).Magnitude
-            if not closest or distance<closest.Distance then closest={Room=row,Distance=distance} end
+        local chosen=priorityBoss(rooms)
+        if not chosen then
+            local closest
+            for _,row in rooms do
+                if not floorOne or (os.clock()>=(api.RetryAfter[row.Id] or 0) and roomReady(row)) then
+                    if row.Id==state.SelectedSecretRoom then chosen=row break end
+                    local distance=(row.Zone.Position-root.Position).Magnitude
+                    if not closest or distance<closest.Distance then closest={Room=row,Distance=distance} end
+                end
+            end
+            chosen=chosen or (closest and closest.Room)
         end
-        chosen=chosen or (closest and closest.Room)
-        if not chosen then status("ยังไม่พบห้องลับ • รอแผนที่โหลด") return false end
+        if not chosen then
+            if floorOne and state.SecretRoomLoopEnabled and not api.NextJob then
+                api.QueueNextRoom(state.SelectedSecretRoom)
+                status("วนห้อง • รอห้องพร้อมเปิด")
+                return true
+            end
+            status(floorOne and "ยังไม่มีห้องสมบัติพร้อมเปิด" or "ยังไม่พบห้องลับ • รอแผนที่โหลด")
+            return false
+        end
         api.Stop()
         api.Active=true api.Phase="Entering" api.Seen={}
         state.SelectedSecretRoom=chosen.Id
         local token=api.Token
-        session={Room=chosen,Character=c,Origin=root.CFrame,OriginInside=inside(chosen,root.Position,3),
+        session={Room=chosen,BossTarget=chosen.Mob and bossTarget(chosen),Character=c,Origin=root.CFrame,OriginInside=inside(chosen,root.Position,3),
             Token=token,Tracked={},TrackedCount=0,ConfirmedKills=0,WavesStarted=0,WavesCleared=0}
+        if chosen.Mob then
+            session.BossEngaged=session.BossTarget~=nil or api.UnfinishedBossId==chosen.Id
+            if session.BossEngaged then api.UnfinishedBossId=chosen.Id end
+        end
         state.SecretRoomWave=0 state.SecretRoomWavesCleared=0
         api.LastCompletion=nil api.LastOpen=nil state.SecretRoomCompleted=false
         session.HealthConnection=h.HealthChanged:Connect(function(value)
@@ -9152,6 +9459,7 @@ function state.ResolveSecretRoom()
                 -- Start is called before SetEnabled flips its public switch.
                 task.wait()
                 if not current(token) then return end
+                if floorOne then enterFloorOne(chosen,token,c,h,root) return end
                 if not walker then stop("ระบบเดินยังไม่พร้อม • โหลดสคริปต์ใหม่")return end
                 local function walk(point)
                     local arrived,problem=walker.WalkTo(point)
@@ -9253,6 +9561,10 @@ function state.ResolveSecretRoom()
                         status("รอจังหวะวาร์ป • "..math.ceil(remaining).." วิ")
                         task.wait(remaining)if not current(token)then return end
                     end
+                    if waitingForHealth(h) then
+                        finishRoom("เลือดยังไม่เต็ม • รอฟื้นก่อนเข้าห้อง","Healing")
+                        return
+                    end
                     root.CFrame=CFrame.new(pos)*root.CFrame.Rotation root.AssemblyLinearVelocity=Vector3.zero
                     api.LastWarpAt=os.clock()
                     task.wait(.4)if not current(token)then return end
@@ -9353,6 +9665,19 @@ function state.ResolveSecretRoom()
     end
     function api.Step()
         if not api.Check() then return true end
+        if session.Room.Mob then
+            if bossDefeated(session) then
+                session.Completed=true state.SecretRoomCompleted=true
+                finishRoom("กำจัด "..session.Room.Name.." แล้ว","Completed")
+                return true
+            end
+            local target=bossTarget(session.Room,session.BossTarget)
+            if target then
+                if target~=session.BossTarget then session.BossLowestHealth=nil session.BossProgressAt=nil end
+                session.BossTarget=target session.BossEngaged=true
+                api.UnfinishedBossId=session.Room.Id
+            end
+        end
         local _,_,root=character()
         if api.Phase=="Entering" then
             if playerInside(root.Position)then
@@ -9367,8 +9692,10 @@ function state.ResolveSecretRoom()
             end
             if api.Phase=="Entering"then return true end
         end
+        local folder=workspace:FindFirstChild("Mobs")
+        if not folder then stop("ข้อมูลมอนสเตอร์หาย • หยุดแล้ว") return true end
         local count,now,candidate=0,os.clock(),nil
-        for _,mob in workspace.Mobs:GetChildren() do
+        for _,mob in folder:GetChildren() do
             if api.IsTarget(mob) then
                 count+=1 trackMob(mob)
                 candidate=candidate or mob
@@ -9377,6 +9704,15 @@ function state.ResolveSecretRoom()
         for _,row in session.Tracked do observeTracked(session,row) end
         state.SecretRoomRemaining=count
         if count>0 then
+            if session.Room.Mob then
+                local health=candidate:GetAttribute("Health")
+                if not session.BossLowestHealth or health<session.BossLowestHealth then
+                    session.BossLowestHealth,session.BossProgressAt=health,now
+                elseif now-session.BossProgressAt>=45 then
+                    recoverBoss("มินิบอสไม่เสียเลือด • ขยับกลับเข้าระยะโจมตี")
+                    return true
+                end
+            end
             session.SawMobs=true session.EmptySince=nil session.CompletionSince=nil api.Phase="Fighting"
             local locked=api.SyncLock(api.IsTarget(state.Target)and state.Target or candidate)
             if locked then state.Target=locked end
@@ -9384,7 +9720,8 @@ function state.ResolveSecretRoom()
             if state.SecretRoomMotionOwned then
                 status("กำลังหลบการโจมตี • เหลือ "..count.." ตัว") return true
             end
-            state.SecretRoomStatus="เวฟ "..session.WavesStarted.."/"..requiredWaves.." • เหลือ "..count.." ตัว"
+            state.SecretRoomStatus=session.Room.Mob and ("กำลังสู้ "..session.Room.Name)
+                or ("เวฟ "..session.WavesStarted.."/"..requiredWaves.." • เหลือ "..count.." ตัว")
             return false
         end
         api.Defend()
@@ -9393,6 +9730,14 @@ function state.ResolveSecretRoom()
         pcall(combat.Release) stopMovement()
         session.EmptySince=session.EmptySince or now
         local completion=completionSnapshot(session)
+        if session.Room.Mob then
+            api.Phase="WaitingBoss"
+            status("กำลังหามินิบอสตัวเดิม • ยังไม่เปลี่ยนห้อง")
+            if now-session.EmptySince>=8 then
+                recoverBoss("มินิบอสหายจากระยะ • กลับไปตรวจห้องเดิม")
+            end
+            return true
+        end
         if completion.SawMobs and not completion.Overflow and completion.Tracked>0
             and completion.ConfirmedKills==completion.Tracked and completion.Alive==0
             and completion.UnknownRemoved==0 then
@@ -9428,6 +9773,10 @@ function state.ResolveSecretRoom()
                 AfterKind=api.LightDiagnostics.AfterKind,LastCancelReason=api.LightDiagnostics.LastCancelReason},
             Kills=api.Kills,Dodges=api.Dodges,OpenCount=api.OpenCount,Defense=defense.Snapshot(),Retreat=api.LastRetreat,
             Walking=walker and walker.Snapshot(),SkillWindow=skillWindow and skillWindow.Snapshot(),
+            Boss=session and session.Room.Mob and {Engaged=session.BossEngaged==true,
+                Health=session.BossTarget and session.BossTarget:GetAttribute("Health"),
+                ConfirmedDead=bossDefeated(session),Recoveries=session.BossRecoveries or 0,
+                RecoveryReason=session.BossRecoveryReason},LastBossCompletion=api.LastBossCompletion,
             Hover=hover.Snapshot(),Open=api.LastOpen,Completion=session and completionSnapshot(session)
                 or api.LastCompletion or completionSnapshot(nil),Locked=state.SecretRoomLocked==true,
             Loop={Enabled=state.SecretRoomLoopEnabled,RoomsCleared=state.SecretRoomRoomsCleared,Cycles=state.SecretRoomLoopCycles,
@@ -9437,7 +9786,7 @@ function state.ResolveSecretRoom()
     state.GetSecretRooms=api.Rooms
     state.SelectSecretRoom=api.Select
     state.GetSecretRoomStatus=api.Snapshot
-    state.SecretRoomStatus="เลือกห้อง • หีบสุ่มไอเท็มหรือมอน"
+    state.SecretRoomStatus=floorOne and "เลือกห้องเริ่มต้น หรือกดเริ่มเพื่อไปห้องที่พร้อม" or "เลือกห้อง • หีบสุ่มไอเท็มหรือมอน"
     state.SecretRoomKills,state.SecretRoomDodges,state.SecretRoomOpenCount=0,0,0
     return api
 end
@@ -9647,7 +9996,7 @@ worldController = (function()
     return api
 end)()
 
-function evernightFactories.createGui()
+local function createGui()
     local uiRoot = player.PlayerGui
     if typeof(gethui) == "function" then
         local ok, root = pcall(gethui)
@@ -11730,7 +12079,17 @@ local function step()
             pcall(combat.Release)
             stopMovement()
             pcall(function()setSprint(false)end)
-            runAction("skill "..row.Name,function()autoSkills.Cast(row,target)end)
+            runAction("skill "..row.Name,function()
+                if autoSkills.Cast(row,target) or state.Mode~="SecretRoom" or state.Target~=target or autoSkills.Busy() then return end
+                local _,_,currentRoot=character()
+                local currentTargetRoot=mobRoot(target)
+                if not currentRoot or not currentTargetRoot or not valid(target) then return end
+                local contact=questCombatDelta(currentRoot,target,currentTargetRoot)
+                if contact.Magnitude<=6 then
+                    state.Attacks+=1
+                    state.SecretRoomController.Attack()
+                end
+            end)
             return
         end
     end
@@ -11764,26 +12123,26 @@ local function step()
     navigate(c, h, root, target, distance, targetRoot)
 end
 
-state.LowGraphicsController = evernightFactories.createLowGraphicsController(state)
+state.LowGraphicsController = createLowGraphicsController(state)
 state.LowGraphicsController.SetEnabled(state.LowGraphics)
-combat = evernightFactories.resolveCombat()
-mining = evernightFactories.resolveMining()
-crafting = evernightFactories.resolveCrafting()
-selling = evernightFactories.resolveSelling()
-freeRespawn = evernightFactories.resolveFreeRespawn()
-serviceTravel = evernightFactories.resolveServiceTravel()
-forgeQuest = currentFloor == 2 and evernightFactories.resolveFloor2StoneQuest(evernightFactories.resolveForgeQuest()) or evernightFactories.resolveNpcStoneQuest(evernightFactories.resolveForgeQuest())
-autoSkills = evernightFactories.resolveAutoSkills()
+combat = resolveCombat()
+mining = resolveMining()
+crafting = resolveCrafting()
+selling = resolveSelling()
+freeRespawn = resolveFreeRespawn()
+serviceTravel = resolveServiceTravel()
+forgeQuest = currentFloor == 2 and resolveFloor2StoneQuest(resolveForgeQuest()) or resolveNpcStoneQuest(resolveForgeQuest())
+autoSkills = resolveAutoSkills()
 state.SecretRoomController = state.ResolveSecretRoom()
-autoPotion = evernightFactories.resolveAutoPotion()
-potionController = evernightFactories.createAutoPotionController(autoPotion, {
+autoPotion = resolveAutoPotion()
+potionController = createAutoPotionController(autoPotion, {
     State = state,
     BeforeRequest = function()
         local setIdentity = setthreadidentity or setidentity
         if setIdentity then setIdentity(2) end
     end,
 })
-travelController = evernightFactories.createServiceTravelController(serviceTravel, {
+travelController = createServiceTravelController(serviceTravel, {
     OnStatus = function(job, message)
         if state.TravelJob == job then state.TravelStatus = message end
     end,
@@ -11795,7 +12154,7 @@ travelController = evernightFactories.createServiceTravelController(serviceTrave
         queueStatus()
     end,
 })
-respawnController = evernightFactories.createFreeRespawnController(freeRespawn, {
+respawnController = createFreeRespawnController(freeRespawn, {
     Enabled = state.AutoRespawn, Deaths = state.RespawnDeaths, Requests = state.RespawnRequests, Completed = state.Respawns,
     OnDeath = function()
         state.ResetMiningGuard(true)
@@ -11823,7 +12182,7 @@ respawnController = evernightFactories.createFreeRespawnController(freeRespawn, 
         state.Status = state.Enabled and "เกิดใหม่แล้ว • กำลังกลับไปฟาร์มต่อ" or "เกิดใหม่แล้ว • พร้อมใช้งาน"
     end,
 })
-saleRunner = evernightFactories.createSellBatchRunner(selling, {
+saleRunner = createSellBatchRunner(selling, {
     Locks = state.SellLocks,
     BeforeRequest = function()
         local setIdentity = setthreadidentity or setidentity
@@ -11866,7 +12225,7 @@ if not controls then
     end)
 end
 state.HasControls = controls ~= nil
-evernightFactories.createGui()
+createGui()
 state.AntiAfkConnection = continuity.IdleSession.Connection
 state.WebhookThread = task.spawn(function()
     local setIdentity = setthreadidentity or setidentity
@@ -11935,8 +12294,8 @@ connect(game:GetService("TeleportService").TeleportInitFailed,function(who)
 end)
 state.ShowMenu(previousSettings.MenuVisible~=false)
 state.Ready=true
-state.AutoResumePending=continuity.Store.CanResume(previousSettings,state.Mode)
-state.ResumeController=evernightFactories.createAutoResumeController(state,{
+state.AutoResumePending=not (currentFloor==1 and state.Mode=="SecretRoom") and continuity.Store.CanResume(previousSettings,state.Mode)
+state.ResumeController=createAutoResumeController(state,{
     Ready=function()
         if state.ServerSelectionReady~=true then return false,state.ServerSelectionStatus end
         local c,h,root=character()
@@ -11967,15 +12326,14 @@ state.ResumeThread=task.spawn(function()
     end
 end)
 ]====]
-local chunk,problem=loadstring(source)
-if not chunk then getgenv().EvernightContinuityInit={Ok=false,Error=problem};return end
 local installed,installError=pcall(function()
-    if type(writefile)~="function" then error("File storage is unavailable") end
+    if type(writefile)~="function" then return end
     if type(makefolder)=="function" then pcall(makefolder,"EvernightControl") end
     writefile("EvernightControl/main.luau",source)
     if type(readfile)=="function" and readfile("EvernightControl/main.luau")~=source then error("Source verification failed") end
 end)
-
+local chunk,problem=loadstring(source)
+if not chunk then getgenv().EvernightContinuityInit={Ok=false,Error=problem};return end
 local ok,result=xpcall(chunk,debug.traceback)
 getgenv().EvernightContinuityInit={Ok=ok,Installed=installed,Error=not ok and tostring(result) or not installed and tostring(installError) or nil}
 return ok and result or nil
