@@ -1798,7 +1798,7 @@ function state.CreateSecretRoomPage(state, options)
             if type(state.SetSecretRoomLoop)=="function"then state.SetSecretRoomLoop(not state.SecretRoomLoopEnabled)end
             api.Refresh(true)
         end)
-        text("Caption", floorOne and "วนห้องสมบัติ · มินิบอส · บอส" or "วาร์ป · 3 เวฟ · ตีและแดชหลบ", 10, 24, 260, 14, guide, 9, colors.Muted)
+        text("Caption", floorOne and "บอส → มินิบอส → ห้องลับ" or "วาร์ป · 3 เวฟ · ตีและแดชหลบ", 10, 24, 260, 14, guide, 9, colors.Muted)
         text("HeightCaption", "ใช้สกิลที่เลือก · ปล่อยท่าจนจบ", 10, 38, 260, 20, guide, 10, colors.Muted)
         hoverMinus = button("−", UDim2.fromOffset(24,20), UDim2.fromOffset(66,38), guide)
         hoverPlus = button("+", UDim2.fromOffset(24,20), UDim2.fromOffset(162,38), guide)
@@ -8332,8 +8332,8 @@ function state.ResolveSecretRoom()
             local mini=halls and halls:FindFirstChild("miniboss room Area")
             local boss=dungeon:FindFirstChild("BossRoom")
             for _,entry in {
-                {Id="boss:1:minotaur",Name="มินิบอส Minotaur",Model=mini,ZoneName="DustVolume",Mob="MinotaurBoss",Kind="Minotaur"},
                 {Id="boss:2:illfang",Name="บอส Illfang",Model=boss,ZoneName="Specks",Mob="Illfang",Kind="Illfang the Kobold Lord"},
+                {Id="boss:1:minotaur",Name="มินิบอส Minotaur",Model=mini,ZoneName="DustVolume",Mob="MinotaurBoss",Kind="Minotaur"},
             } do
                 local zone=entry.Model and entry.Model:FindFirstChild(entry.ZoneName,true)
                 if zone and zone:IsA("BasePart") then
@@ -9120,6 +9120,15 @@ function state.ResolveSecretRoom()
     local function roomReady(room)
         return (room.Prompt and room.Prompt.Enabled) or roomHasMobs(room)
     end
+    local function priorityBoss(catalog)
+        if not floorOne then return end
+        local now=os.clock()
+        for index,room in catalog do
+            if room.Mob and now>=(api.RetryAfter[room.Id] or 0) and roomReady(room) then
+                return room,index
+            end
+        end
+    end
     local function enterFloorOne(room,token,c,h,root)
         if combat.IsFocused() then finishRoom("ปิดหน้าต่างเกมก่อนเริ่ม","Paused") return end
         -- Validate a standing point near the encounter using loaded room geometry.
@@ -9242,11 +9251,13 @@ function state.ResolveSecretRoom()
                 end
                 local catalog=describe()local index=0
                 for i,row in catalog do if row.Id==fromId then index=i break end end
-                local chosen,chosenIndex
-                for offset=1,#catalog do
-                    local i=(index+offset-1)%#catalog+1 local row=catalog[i]
-                    if os.clock()>=(api.RetryAfter[row.Id]or 0)and roomReady(row) then
-                        chosen,chosenIndex=row,i break
+                local chosen,chosenIndex=priorityBoss(catalog)
+                if not chosen then
+                    for offset=1,#catalog do
+                        local i=(index+offset-1)%#catalog+1 local row=catalog[i]
+                        if os.clock()>=(api.RetryAfter[row.Id]or 0)and roomReady(row) then
+                            chosen,chosenIndex=row,i break
+                        end
                     end
                 end
                 if not chosen then status("วนครบแล้ว • รอห้องพร้อมเปิดอีกครั้ง")schedule(8)return end
@@ -9317,15 +9328,18 @@ function state.ResolveSecretRoom()
         end
         if state.SecretRoomAutoRetreat and h.Health/h.MaxHealth<.70 then status("รอเลือดอย่างน้อย 70%")return false end
         rooms=describe()
-        local chosen,closest
-        for _,row in rooms do
-            if not floorOne or (os.clock()>=(api.RetryAfter[row.Id] or 0) and roomReady(row)) then
-                if row.Id==state.SelectedSecretRoom then chosen=row break end
-                local distance=(row.Zone.Position-root.Position).Magnitude
-                if not closest or distance<closest.Distance then closest={Room=row,Distance=distance} end
+        local chosen=priorityBoss(rooms)
+        if not chosen then
+            local closest
+            for _,row in rooms do
+                if not floorOne or (os.clock()>=(api.RetryAfter[row.Id] or 0) and roomReady(row)) then
+                    if row.Id==state.SelectedSecretRoom then chosen=row break end
+                    local distance=(row.Zone.Position-root.Position).Magnitude
+                    if not closest or distance<closest.Distance then closest={Room=row,Distance=distance} end
+                end
             end
+            chosen=chosen or (closest and closest.Room)
         end
-        chosen=chosen or (closest and closest.Room)
         if not chosen then
             if floorOne and state.SecretRoomLoopEnabled and not api.NextJob then
                 api.QueueNextRoom(state.SelectedSecretRoom)
