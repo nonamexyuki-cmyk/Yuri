@@ -1798,7 +1798,7 @@ function state.CreateSecretRoomPage(state, options)
             if type(state.SetSecretRoomLoop)=="function"then state.SetSecretRoomLoop(not state.SecretRoomLoopEnabled)end
             api.Refresh(true)
         end)
-        text("Caption", floorOne and "บอส → มินิบอส → ห้องลับ" or "วาร์ป · 3 เวฟ · ตีและแดชหลบ", 10, 24, 260, 14, guide, 9, colors.Muted)
+        text("Caption", floorOne and "มินิบอส → ห้องลับ" or "วาร์ป · 3 เวฟ · ตีและแดชหลบ", 10, 24, 260, 14, guide, 9, colors.Muted)
         text("HeightCaption", "ใช้สกิลที่เลือก · ปล่อยท่าจนจบ", 10, 38, 260, 20, guide, 10, colors.Muted)
         hoverMinus = button("−", UDim2.fromOffset(24,20), UDim2.fromOffset(66,38), guide)
         hoverPlus = button("+", UDim2.fromOffset(24,20), UDim2.fromOffset(162,38), guide)
@@ -3495,9 +3495,10 @@ local function resolveAutoSkills()
         local c,h,root = character()
         local targetRoot = target and mobRoot(target)
         local id = native.skillForSlot(row.Slot)
+        local rangeDelta = root and targetRoot and (state.Mode=="SecretRoom" and questCombatDelta(root,target,targetRoot) or targetRoot.Position-root.Position)
         if not state.Alive or not state.Enabled or not state.SkillsEnabled or not state.SkillSelection[row.Id]
             or (state.Mode ~= "Combat" and state.Mode ~= "Quest" and state.Mode ~= "SecretRoom" and not (state.Mode == "Mining" and state.MiningDefenseTarget == target)) or not c or not valid(target) or not targetRoot
-            or id ~= row.Id or (targetRoot.Position-root.Position).Magnitude > 14
+            or id ~= row.Id or not rangeDelta or rangeDelta.Magnitude > 14
             or (state.Mode=="SecretRoom" and native.cooldownLeft(id)>0) or not native.CanCast(id,true) then return false end
         api.LastAttempt, api.Cursor = os.clock(), row.Slot
         local direction = targetRoot.Position-root.Position
@@ -8288,7 +8289,7 @@ end
 function state.ResolveSecretRoom()
     local native=require(player.PlayerScripts.Client.Systems.Combat)
     local api={Active=false,Token=0,Phase="Idle",Used={},Seen={},Kills=0,Dodges=0,OpenCount=0}
-    local rooms,session,defense,entryThread,hover,walker,skillWindow,finishRoom
+    local rooms,session,defense,entryThread,hover,walker,skillWindow,finishRoom,recoverBoss
     local ownedLight,ownedLightCharacter
     local releaseLock=function()end
     local floorOne=currentFloor==1
@@ -8299,7 +8300,7 @@ function state.ResolveSecretRoom()
     state.SecretRoomInstantEntry=true
     state.SecretRoomLoopEnabled=previousSettings.SecretRoomLoopEnabled~=false
     state.SecretRoomRoomsCleared=0 state.SecretRoomLoopCycles=0
-    api.RetryAfter={}
+    api.RetryAfter,api.ScoutAfter={},{}
     -- Resume only the supported ground strategy after the failed aerial trials.
     state.SecretRoomHover=false
     state.SecretRoomHoverHeight=math.clamp(math.floor(tonumber(previousSettings.SecretRoomHoverHeight) or 9),4,10)
@@ -8330,16 +8331,10 @@ function state.ResolveSecretRoom()
         if floorOne then
             local halls=dungeon:FindFirstChild("Dungeon")
             local mini=halls and halls:FindFirstChild("miniboss room Area")
-            local boss=dungeon:FindFirstChild("BossRoom")
-            for _,entry in {
-                {Id="boss:2:illfang",Name="บอส Illfang",Model=boss,ZoneName="Specks",Mob="Illfang",Kind="Illfang the Kobold Lord"},
-                {Id="boss:1:minotaur",Name="มินิบอส Minotaur",Model=mini,ZoneName="DustVolume",Mob="MinotaurBoss",Kind="Minotaur"},
-            } do
-                local zone=entry.Model and entry.Model:FindFirstChild(entry.ZoneName,true)
-                if zone and zone:IsA("BasePart") then
-                    entry.Zone=zone
-                    out[#out+1]=entry
-                end
+            local zone=mini and mini:FindFirstChild("DustVolume",true)
+            if zone and zone:IsA("BasePart") then
+                out[#out+1]={Id="boss:1:minotaur",Name="มินิบอส Minotaur",Model=mini,Zone=zone,
+                    ScoutPoint=Vector3.new(-955,-480,1326),Mob="MinotaurBoss",Kind="Minotaur"}
             end
         end
         return out
@@ -8354,7 +8349,7 @@ function state.ResolveSecretRoom()
     local function playerInside(position)
         if not session or not session.Room.Zone:IsDescendantOf(session.Room.Model) then return false end
         local room=session.Room
-        if floorOne then return inside(room,position,2) end
+        if floorOne then return inside(room,position,room.Mob and 24 or 2) end
         local localPoint=room.Zone.CFrame:PointToObjectSpace(position)
         local half=room.Zone.Size/2
         local allowance=state.SecretRoomUnderground and state.SecretRoomUndergroundDepth+1 or 3
@@ -8402,16 +8397,29 @@ function state.ResolveSecretRoom()
             root.CFrame=CFrame.new(point)*root.CFrame.Rotation root.AssemblyLinearVelocity=Vector3.zero
         end
     end
-    local function bossTarget(room)
+    local function bossTarget(room,preferred)
         local folder=workspace:FindFirstChild("Mobs")
+        local function alive(mob)
+            local health=mob and mob:GetAttribute("Health")
+            return mob and mob.Parent==folder and mob:IsA("Model") and mobRoot(mob)~=nil
+                and mob.Name==room.Mob and mob:GetAttribute("MobKind")==room.Kind
+                and mob:GetAttribute("StoryOwner")==nil and not mob:GetAttribute("IsDead")
+                and type(health)=="number" and health>0
+        end
+        -- Keep the same encounter when it crosses the ambience volume's edge.
+        if alive(preferred) then return preferred end
         local mob=folder and folder:FindFirstChild(room.Mob)
-        local part=mobRoot(mob)
-        local health=mob and mob:GetAttribute("Health")
-        if part and mob:IsA("Model") and mob:GetAttribute("MobKind")==room.Kind
-            and mob:GetAttribute("StoryOwner")==nil and not mob:GetAttribute("IsDead")
-            and type(health)=="number" and health>0 and inside(room,part.Position,0) then
+        if alive(mob) and inside(room,mobRoot(mob).Position,32) then
             return mob
         end
+    end
+    local function bossDefeated(bound)
+        local mob=bound and bound.BossTarget
+        if not mob then return false end
+        local tracked=bound.Tracked and bound.Tracked[mob]
+        local health=mob:GetAttribute("Health")
+        return (tracked and tracked.Dead==true) or mob:GetAttribute("IsDead")==true
+            or (type(health)=="number" and health<=0)
     end
     function api.Rooms()
         rooms=describe()
@@ -8443,7 +8451,7 @@ function state.ResolveSecretRoom()
             or state.Mode~="SecretRoom" or player.Character~=session.Character
             or not mob or typeof(mob)~="Instance"
             or mob.Parent~=workspace:FindFirstChild("Mobs") or not mob:IsA("Model") then return false end
-        if session.Room.Mob then return mob==session.BossTarget and mob==bossTarget(session.Room) end
+        if session.Room.Mob then return mob==session.BossTarget and mob==bossTarget(session.Room,mob) end
         local owner=mob:GetAttribute("StoryOwner")
         if owner~=nil then return false end -- Never take story/private quest enemies.
         local part=mobRoot(mob)
@@ -8617,6 +8625,11 @@ function state.ResolveSecretRoom()
             stop("เลือดเหลือ 30% หรือน้อยกว่า • ถอยและหยุดห้องลับแล้ว",true) return false
         end
         if api.Phase~="Entering" and not playerInside(root.Position) then
+            if session.Room.Mob and session.BossEngaged then
+                if bossDefeated(session) then return true end
+                recoverBoss("หลุดขอบห้อง • กลับไปสู้มินิบอสตัวเดิม")
+                return false
+            end
             if state.SecretRoomLoopEnabled then finishRoom("ออกจากห้อง • รอไปห้องถัดไป","Incomplete")
             else stop("ออกจากห้อง • หยุดไล่มอนแล้ว")end
             return false
@@ -8812,8 +8825,8 @@ function state.ResolveSecretRoom()
         elseif not beforeKnown or not afterKnown or after~=ownedLight then
             ownedLight,ownedLightCharacter=nil,nil
         end
-        -- On Floor 2, keep light input held across windups; defense and skills release it.
-        if not attackOk or (currentFloor~=2 and not ownedLight) then
+        -- Keep light input held across windups; a dodge, skill or lost target releases it.
+        if not attackOk then
             local released,releaseError=pcall(nativeCall,combat.Release)
             if not released then error(releaseError)end
         end
@@ -8847,7 +8860,7 @@ function state.ResolveSecretRoom()
     end
     -- END OWNED LIGHT READER
     defense=state.CreateSecretRoomDefense({
-        AttackDuringWindup=true,DodgeOnly=currentFloor==2,PrepareLead=0.08,
+        AttackDuringWindup=true,DodgeOnly=true,PrepareLead=0.08,
         DashLead=currentFloor==2 and 0.10 or 0.14,ExpiryGrace=currentFloor==2 and 0.15 or 0.2,
         Ready=function()
             local c,h,root=character()
@@ -8870,7 +8883,6 @@ function state.ResolveSecretRoom()
         Prepare=function()
             if autoSkills and autoSkills.Busy()then return false end
             pcall(combat.Release)
-            if currentFloor~=2 then api.CancelOwnedLight() end
             return not autoSkills or not autoSkills.Busy()
         end,
         HoldBlock=function(on,mob)
@@ -9122,9 +9134,15 @@ function state.ResolveSecretRoom()
     end
     local function priorityBoss(catalog)
         if not floorOne then return end
+        if api.UnfinishedBossId then
+            for index,room in catalog do
+                if room.Id==api.UnfinishedBossId and room.Mob then return room,index end
+            end
+        end
         local now=os.clock()
         for index,room in catalog do
-            if room.Mob and now>=(api.RetryAfter[room.Id] or 0) and roomReady(room) then
+            if room.Mob and now>=(api.RetryAfter[room.Id] or 0)
+                and (roomReady(room) or now>=(api.ScoutAfter[room.Id] or 0)) then
                 return room,index
             end
         end
@@ -9136,22 +9154,27 @@ function state.ResolveSecretRoom()
         params.RespectCanCollide=true
         params.FilterType=Enum.RaycastFilterType.Exclude
         params.FilterDescendantsInstances={c,workspace.Mobs,room.Chest}
-        local bossPart=mobRoot(session.BossTarget)
-        if room.Mob and not bossPart then finishRoom("บอสยังไม่เกิด • ข้ามห้องนี้","Unavailable") return end
-        local origin=bossPart and bossPart.CFrame or room.Zone.CFrame
+        local bossPart=mobRoot(room.Mob and bossTarget(room,session.BossTarget))
+        local scouting=room.Mob and not bossPart
+        if scouting then api.ScoutAfter[room.Id]=os.clock()+75 end
+        local origin=bossPart and bossPart.CFrame or scouting and CFrame.new(room.ScoutPoint) or room.Zone.CFrame
         local radius=bossPart and (math.max(bossPart.Size.X,bossPart.Size.Z)/2+5) or 6
-        local depth=bossPart and 45 or 18
+        local depth=room.Mob and 45 or 18
         local pos,bestDistance
-        for _,offset in {Vector3.new(radius,0,0),Vector3.new(-radius,0,0),Vector3.new(0,0,radius),Vector3.new(0,0,-radius)} do
+        local offsets=scouting and {Vector3.zero} or {Vector3.new(radius,0,0),Vector3.new(-radius,0,0),Vector3.new(0,0,radius),Vector3.new(0,0,-radius)}
+        for _,offset in offsets do
             local point=bossPart and (origin.Position+offset) or origin:PointToWorldSpace(offset)
             local hit=workspace:Raycast(point,Vector3.new(0,-depth,0),params)
             if hit and hit.Normal.Y>=.6 then
                 local standing=hit.Position+Vector3.new(0,h.HipHeight+root.Size.Y/2+.1,0)
-                if inside(room,standing,0) then
-                    if bossPart and hit.Instance:IsDescendantOf(room.Model) then
+                if inside(room,standing,room.Mob and 24 or 0) then
+                    if scouting and hit.Instance:IsDescendantOf(room.Model) then
+                        pos=standing
+                        break
+                    elseif bossPart and hit.Instance:IsDescendantOf(room.Model) then
                         local distance=(bossPart:GetClosestPointOnSurface(standing)-standing).Magnitude
                         if not bestDistance or distance<bestDistance then pos,bestDistance=standing,distance end
-                    elseif not bossPart and (standing-room.Main.Position).Magnitude<=room.Prompt.MaxActivationDistance then
+                    elseif not room.Mob and (standing-room.Main.Position).Magnitude<=room.Prompt.MaxActivationDistance then
                         pos=standing
                         break
                     end
@@ -9166,9 +9189,9 @@ function state.ResolveSecretRoom()
             if not current(token) then return end
         end
         if c:GetAttribute("Sheathed") then stop("ชักอาวุธไม่สำเร็จ • หยุดก่อนเข้าห้อง") return end
-        local entryDistance=bossPart and 18 or room.Prompt.MaxActivationDistance
-        local entryPoint=bossPart and pos or room.Main.Position
-        if not playerInside(root.Position) or (root.Position-entryPoint).Magnitude>entryDistance then
+        local entryDistance=room.Mob and 18 or room.Prompt.MaxActivationDistance
+        local entryPoint=room.Mob and pos or room.Main.Position
+        if session.RecoveringBoss or not playerInside(root.Position) or (root.Position-entryPoint).Magnitude>entryDistance then
             local remaining=8-(os.clock()-(api.LastWarpAt or -100))
             if remaining>0 then
                 task.wait(remaining)
@@ -9181,7 +9204,29 @@ function state.ResolveSecretRoom()
             if not current(token) then return end
         end
         if not playerInside(root.Position) then finishRoom("เข้าไม่ถึงห้อง • ข้ามห้องนี้","Unavailable") return end
-        if room.Mob or roomHasMobs(room) then
+        if room.Mob then
+            if not bossDefeated(session) and not bossTarget(room,session.BossTarget) then
+                status("กำลังตรวจห้อง "..room.Name)
+                local untilAt=os.clock()+7
+                local found
+                repeat
+                    found=bossTarget(room,session.BossTarget)
+                    if found then session.BossTarget=found break end
+                    task.wait(.15)
+                    if not current(token) then return end
+                until os.clock()>=untilAt
+                if not found then
+                    finishRoom("ห้องบอสยังว่าง • ไปห้องถัดไป","Unavailable")
+                    return
+                end
+            end
+            if session.BossTarget then
+                session.BossEngaged=true api.UnfinishedBossId=room.Id
+            end
+            api.Phase="Waiting"
+            return
+        end
+        if roomHasMobs(room) then
             api.Phase="Waiting"
             return
         end
@@ -9219,6 +9264,31 @@ function state.ResolveSecretRoom()
         api.OpenCount+=1
         state.SecretRoomOpenCount=api.OpenCount
         api.Used[room.Id]=true
+    end
+    recoverBoss=function(reason)
+        local bound=session
+        if not bound or not bound.Room.Mob or not bound.BossEngaged or bossDefeated(bound)
+            or not current(api.Token) or api.Phase=="Entering" then return end
+        local now=os.clock()
+        if now-(bound.BossRecoveryAt or -100)<8 then return end
+        local c,h,root=character()
+        if c~=bound.Character or not h or h.Health<=0 or not root then return end
+        bound.BossRecoveryAt=now bound.BossProgressAt=now bound.EmptySince=nil
+        bound.BossRecoveries=(bound.BossRecoveries or 0)+1 bound.BossRecoveryReason=reason
+        bound.RecoveringBoss=true
+        api.Phase="Entering"
+        releaseLock() state.Target=nil clearMotion() defense.Reset()
+        status(reason)
+        local token=api.Token
+        entryThread=task.spawn(function()
+            local set=setthreadidentity or setidentity if set then set(2) end
+            task.wait()
+            if not current(token) or session~=bound then return end
+            local ok,err=xpcall(function()enterFloorOne(bound.Room,token,c,h,root)end,debug.traceback)
+            if not current(token) or session~=bound then return end
+            bound.RecoveringBoss=false entryThread=nil
+            if not ok then state.SecretRoomError=tostring(err) stop("กลับเข้าห้องมินิบอสไม่สำเร็จ • หยุดแล้ว")end
+        end)
     end
     local function waitingForHealth(h)
         if currentFloor~=2 or h.Health>=h.MaxHealth then return false end
@@ -9271,9 +9341,25 @@ function state.ResolveSecretRoom()
         schedule(8)
     end
     finishRoom=function(reason,outcome)
+        -- An engaged miniboss owns this route until an observed death, even if
+        -- entry, streaming or combat progress temporarily fails.
+        if session and session.Room.Mob and session.BossEngaged
+            and not bossDefeated(session) and outcome~="Died" then
+            api.Phase="Waiting" session.EmptySince=session.EmptySince or os.clock()
+            status("ยังยืนยันมินิบอสตายไม่ได้ • รอสู้ต่อในห้องเดิม")
+            return
+        end
         local fromId=session and session.Room.Id or state.SelectedSecretRoom
         local keepGoing=state.Alive and state.Enabled and state.Mode=="SecretRoom"and state.SecretRoomLoopEnabled
-        if outcome=="Completed"then state.SecretRoomRoomsCleared+=1 end
+        if outcome=="Completed"then
+            state.SecretRoomRoomsCleared+=1
+            if session and session.Room.Mob then
+                api.ScoutAfter[fromId]=os.clock()+75 api.UnfinishedBossId=nil
+                api.LastBossCompletion={Room=fromId,Confirmed=bossDefeated(session),
+                    Health=session.BossTarget and session.BossTarget:GetAttribute("Health"),
+                    Recoveries=session.BossRecoveries or 0}
+            end
+        end
         if fromId then api.RetryAfter[fromId]=os.clock()+(outcome=="FailedOpen"and 30 or 10)end
         api.LastRoomOutcome=outcome
         api.Stop(reason)
@@ -9355,6 +9441,10 @@ function state.ResolveSecretRoom()
         local token=api.Token
         session={Room=chosen,BossTarget=chosen.Mob and bossTarget(chosen),Character=c,Origin=root.CFrame,OriginInside=inside(chosen,root.Position,3),
             Token=token,Tracked={},TrackedCount=0,ConfirmedKills=0,WavesStarted=0,WavesCleared=0}
+        if chosen.Mob then
+            session.BossEngaged=session.BossTarget~=nil or api.UnfinishedBossId==chosen.Id
+            if session.BossEngaged then api.UnfinishedBossId=chosen.Id end
+        end
         state.SecretRoomWave=0 state.SecretRoomWavesCleared=0
         api.LastCompletion=nil api.LastOpen=nil state.SecretRoomCompleted=false
         session.HealthConnection=h.HealthChanged:Connect(function(value)
@@ -9575,6 +9665,19 @@ function state.ResolveSecretRoom()
     end
     function api.Step()
         if not api.Check() then return true end
+        if session.Room.Mob then
+            if bossDefeated(session) then
+                session.Completed=true state.SecretRoomCompleted=true
+                finishRoom("กำจัด "..session.Room.Name.." แล้ว","Completed")
+                return true
+            end
+            local target=bossTarget(session.Room,session.BossTarget)
+            if target then
+                if target~=session.BossTarget then session.BossLowestHealth=nil session.BossProgressAt=nil end
+                session.BossTarget=target session.BossEngaged=true
+                api.UnfinishedBossId=session.Room.Id
+            end
+        end
         local _,_,root=character()
         if api.Phase=="Entering" then
             if playerInside(root.Position)then
@@ -9606,7 +9709,7 @@ function state.ResolveSecretRoom()
                 if not session.BossLowestHealth or health<session.BossLowestHealth then
                     session.BossLowestHealth,session.BossProgressAt=health,now
                 elseif now-session.BossProgressAt>=45 then
-                    finishRoom("บอสไม่เสียเลือดต่อเนื่อง • ไปห้องถัดไป","Incomplete")
+                    recoverBoss("มินิบอสไม่เสียเลือด • ขยับกลับเข้าระยะโจมตี")
                     return true
                 end
             end
@@ -9628,13 +9731,10 @@ function state.ResolveSecretRoom()
         session.EmptySince=session.EmptySince or now
         local completion=completionSnapshot(session)
         if session.Room.Mob then
-            local boss=session.BossTarget
-            local health=boss and boss:GetAttribute("Health")
-            if boss and (boss:GetAttribute("IsDead")==true or (type(health)=="number" and health<=0)) then
-                session.Completed=true state.SecretRoomCompleted=true
-                finishRoom("กำจัด "..session.Room.Name.." แล้ว","Completed")
-            elseif now-session.EmptySince>=8 then
-                finishRoom("บอสออกจากห้องหรือหายไป • ไปห้องถัดไป","Incomplete")
+            api.Phase="WaitingBoss"
+            status("กำลังหามินิบอสตัวเดิม • ยังไม่เปลี่ยนห้อง")
+            if now-session.EmptySince>=8 then
+                recoverBoss("มินิบอสหายจากระยะ • กลับไปตรวจห้องเดิม")
             end
             return true
         end
@@ -9673,6 +9773,10 @@ function state.ResolveSecretRoom()
                 AfterKind=api.LightDiagnostics.AfterKind,LastCancelReason=api.LightDiagnostics.LastCancelReason},
             Kills=api.Kills,Dodges=api.Dodges,OpenCount=api.OpenCount,Defense=defense.Snapshot(),Retreat=api.LastRetreat,
             Walking=walker and walker.Snapshot(),SkillWindow=skillWindow and skillWindow.Snapshot(),
+            Boss=session and session.Room.Mob and {Engaged=session.BossEngaged==true,
+                Health=session.BossTarget and session.BossTarget:GetAttribute("Health"),
+                ConfirmedDead=bossDefeated(session),Recoveries=session.BossRecoveries or 0,
+                RecoveryReason=session.BossRecoveryReason},LastBossCompletion=api.LastBossCompletion,
             Hover=hover.Snapshot(),Open=api.LastOpen,Completion=session and completionSnapshot(session)
                 or api.LastCompletion or completionSnapshot(nil),Locked=state.SecretRoomLocked==true,
             Loop={Enabled=state.SecretRoomLoopEnabled,RoomsCleared=state.SecretRoomRoomsCleared,Cycles=state.SecretRoomLoopCycles,
@@ -11975,7 +12079,17 @@ local function step()
             pcall(combat.Release)
             stopMovement()
             pcall(function()setSprint(false)end)
-            runAction("skill "..row.Name,function()autoSkills.Cast(row,target)end)
+            runAction("skill "..row.Name,function()
+                if autoSkills.Cast(row,target) or state.Mode~="SecretRoom" or state.Target~=target or autoSkills.Busy() then return end
+                local _,_,currentRoot=character()
+                local currentTargetRoot=mobRoot(target)
+                if not currentRoot or not currentTargetRoot or not valid(target) then return end
+                local contact=questCombatDelta(currentRoot,target,currentTargetRoot)
+                if contact.Magnitude<=6 then
+                    state.Attacks+=1
+                    state.SecretRoomController.Attack()
+                end
+            end)
             return
         end
     end
